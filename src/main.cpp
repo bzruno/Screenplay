@@ -220,6 +220,35 @@ static void draw_page_shadow(QPainter& painter, const QRectF& page_rect) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Block-type accent colours — the ONLY colour in the app. The chrome stays
+// flat greyscale; these identify the screenplay element type (scene heading,
+// action, character, …) on the caret, the active-block marker, the element
+// badge and the SmartType selection.
+//
+// Same hues as before, pushed to strong mid-tone saturations chosen to hold
+// contrast on BOTH a white page and a dark-grey page (and on both the light
+// and dark chrome), so a single value works in either theme.
+// ─────────────────────────────────────────────────────────────────────────────
+static QColor block_color(screenplay::BlockType t) {
+    switch (t) {
+    case screenplay::BlockType::SceneHeading:  return { 0x7C, 0x4D, 0xFF }; // violet
+    case screenplay::BlockType::Action:        return { 0x2E, 0xA0, 0x43 }; // green
+    case screenplay::BlockType::Character:     return { 0xF5, 0x7C, 0x00 }; // orange
+    case screenplay::BlockType::Parenthetical: return { 0xC8, 0x94, 0x00 }; // amber
+    case screenplay::BlockType::Dialogue:      return { 0x1E, 0x88, 0xE5 }; // blue
+    case screenplay::BlockType::Transition:    return { 0xD8, 0x1B, 0x8C }; // magenta
+    case screenplay::BlockType::DualDialogue:  return { 0x1E, 0x88, 0xE5 }; // blue
+    }
+    return MD3::TextDim;
+}
+
+// Black or white, whichever reads better on top of `bg` (WCAG luminance).
+static QColor contrast_text(const QColor& bg) {
+    double L = (0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()) / 255.0;
+    return L > 0.6 ? QColor(0x14, 0x14, 0x14) : QColor(0xFF, 0xFF, 0xFF);
+}
+
 static const char* block_label(screenplay::BlockType t) {
     switch (t) {
     case screenplay::BlockType::SceneHeading:  return "SCENE [Ctrl+1]";
@@ -830,6 +859,14 @@ public:
         update();
     }
 
+    // Element type of the block the popup is completing — colours the
+    // selected suggestion to match the caret/badge accent.
+    void set_block_type(screenplay::BlockType t) {
+        if (block_type_ == t) return;
+        block_type_ = t;
+        update();
+    }
+
     void hide_popup() { hide(); }
     bool is_visible() const { return isVisible(); }
 
@@ -901,8 +938,9 @@ protected:
             if (abs_i == sel_) {
                 QPainterPath sel_bg;
                 sel_bg.addRoundedRect(r.adjusted(3, 1, -3, -1), 4, 4);
-                p.fillPath(sel_bg, MD3::HoverBg);   // neutral active fill
-                p.setPen(MD3::Text);
+                QColor sel_col = block_color(block_type_);
+                p.fillPath(sel_bg, sel_col);           // element-colour fill
+                p.setPen(contrast_text(sel_col));      // readable on that fill
             } else {
                 p.setPen(MD3::OnSurface);
             }
@@ -937,6 +975,7 @@ private:
     }
 
     std::vector<std::string>  suggs_;
+    screenplay::BlockType     block_type_ = screenplay::BlockType::Action;
     int sel_           = -1;
     int scroll_offset_ = 0;
     int item_h_        = 22;
@@ -2264,7 +2303,7 @@ private:
                 line_font.setUnderline(blk_ref.is_underline_);
                 const QFontMetricsF line_fm(line_font);
 
-                // ── Active-block highlight: neutral left marker + faint tint ────
+                // ── Active-block highlight: coloured left marker + faint tint ───
                 bool active = (vl.block_idx == st.cursor.block_idx);
                 if (active && vl.line_in_block == 0) {
                     float block_line_count = (float)std::max(size_t(1),
@@ -2275,11 +2314,12 @@ private:
                             return cnt;
                         }());
                     float bh = lh_px * block_line_count + 4;
-                    // Faint neutral tint across the full page width
-                    painter.fillRect(QRectF(px, ty - 2, pw, bh),
-                                     MD3::pageOverlay(8, 12));
-                    // 2px neutral left marker (graphite/grey, not a colour)
-                    painter.fillRect(QRectF(px, ty - 2, 2, bh), MD3::PageTextDim);
+                    QColor bc = block_color(blk_ref.type);
+                    // Faint element-colour tint across the full page width
+                    QColor tint(bc); tint.setAlpha(MD3::dark ? 26 : 20);
+                    painter.fillRect(QRectF(px, ty - 2, pw, bh), tint);
+                    // 3px solid element-colour left marker
+                    painter.fillRect(QRectF(px, ty - 2, 3, bh), bc);
                 }
 
                 // ── Character dialogue highlight (behind text) ───────────────
@@ -2540,9 +2580,8 @@ private:
                         float cw = line_fm.horizontalAdvance(
                             QString::fromStdString(
                                 vl.display_text.substr(0, cursor_in_line)));
-                        // Caret in the page's ink colour (black on a white
-                        // page, light grey on a dark page) — like Word.
-                        painter.setPen(QPen(MD3::PageText, 2.f));
+                        // Caret in the current element's accent colour.
+                        painter.setPen(QPen(block_color(blk_c.type), 2.f));
                         painter.drawLine(
                             QPointF(tx + cw, ty),
                             QPointF(tx + cw, ty + lh_px));
@@ -2559,9 +2598,11 @@ private:
         if (st.script.blocks.empty() ||
             st.cursor.block_idx >= st.script.blocks.size()) return;
         const auto& cb  = st.script.blocks[st.cursor.block_idx];
+        const QColor col = block_color(cb.type);
 
-        // Neutral current-element badge, top-left, on the canvas backdrop.
-        // No colour coding, no coloured edge strip — flat greyscale chrome.
+        // Current-element badge, top-left. Flat: a soft tint of the element
+        // colour, a 1px element-colour border, element-colour text — reads on
+        // both the light and dark canvas.
         QFont f; f.setFamily("Segoe UI"); f.setPixelSize(10); f.setBold(true);
         apply_render_quality(f);
         painter.setFont(f);
@@ -2571,10 +2612,11 @@ private:
 
         QRect badge(10, 10, tw + 16, 20);
         QPainterPath bp; bp.addRoundedRect(badge, 5, 5);
-        painter.fillPath(bp, MD3::Bg1);
-        painter.setPen(QPen(MD3::Border, 1));
+        QColor fill(col); fill.setAlpha(MD3::dark ? 46 : 34);
+        painter.fillPath(bp, fill);
+        painter.setPen(QPen(col, 1));
         painter.drawPath(bp);
-        painter.setPen(MD3::TextDim);
+        painter.setPen(col);
         painter.drawText(badge, Qt::AlignCenter, lbl);
     }
 
@@ -2648,6 +2690,7 @@ private:
                 QPoint local_pt((int)(tx + cw), (int)(ty + lh_px + 2));
                 QPoint win_pt = mapTo(window(), local_pt);
 
+                popup_->set_block_type(st.script.blocks[st.cursor.block_idx].type);
                 popup_->show_suggestions(st.suggestions, st.suggestion_idx,
                                          win_pt);
                 return;
