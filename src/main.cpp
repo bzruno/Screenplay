@@ -60,6 +60,10 @@
 #include <QSpinBox>
 #include <QDateTimeEdit>
 #include <QSettings>
+#include <QGraphicsOpacityEffect>
+#include <QPropertyAnimation>
+#include <QEasingCurve>
+#include <QPointer>
 
 #include "layout/freetype_metrics.hpp"
 #include "layout/layout_engine.hpp"
@@ -3141,6 +3145,98 @@ private:
 using ScriptDatabase = ScriptDatabasePanel;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Toast — transient feedback pill, bottom-center of the window.
+// Fade+slide in (180ms), hold 2.4s, fade out (220ms). One at a time.
+// ─────────────────────────────────────────────────────────────────────────────
+class Toast : public QWidget {
+    Q_OBJECT
+public:
+    enum class Kind { Info, Success, Error };
+
+    static void show_toast(QWidget* window, const QString& text,
+                           Kind kind = Kind::Success) {
+        static QPointer<Toast> active;
+        if (active) active->deleteLater();
+        active = new Toast(window, text, kind);
+        active->popup();
+    }
+
+private:
+    Toast(QWidget* parent, const QString& text, Kind kind)
+        : QWidget(parent), text_(text), kind_(kind)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        QFont f("Segoe UI");
+        f.setPixelSize(12);
+        setFont(f);
+        const int w = QFontMetrics(f).horizontalAdvance(text_) + 32 + 20;
+        setFixedSize(std::min(w, parent->width() - 40), 36);
+        opacity_ = new QGraphicsOpacityEffect(this);
+        opacity_->setOpacity(0);
+        setGraphicsEffect(opacity_);
+    }
+
+    void popup() {
+        auto* p = parentWidget();
+        const int x     = (p->width() - width()) / 2;
+        const int y_end = p->height() - height() - 52;
+        move(x, y_end + 12);
+        show();
+        raise();
+
+        auto* fade = new QPropertyAnimation(opacity_, "opacity", this);
+        fade->setDuration(180);
+        fade->setStartValue(0.0);
+        fade->setEndValue(1.0);
+        fade->setEasingCurve(QEasingCurve::OutCubic);
+        fade->start(QAbstractAnimation::DeleteWhenStopped);
+
+        auto* slide = new QPropertyAnimation(this, "pos", this);
+        slide->setDuration(180);
+        slide->setStartValue(QPoint(x, y_end + 12));
+        slide->setEndValue(QPoint(x, y_end));
+        slide->setEasingCurve(QEasingCurve::OutCubic);
+        slide->start(QAbstractAnimation::DeleteWhenStopped);
+
+        QTimer::singleShot(2400, this, [this] {
+            auto* out = new QPropertyAnimation(opacity_, "opacity", this);
+            out->setDuration(220);
+            out->setStartValue(opacity_->opacity());
+            out->setEndValue(0.0);
+            connect(out, &QPropertyAnimation::finished,
+                    this, &QWidget::deleteLater);
+            out->start(QAbstractAnimation::DeleteWhenStopped);
+        });
+    }
+
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        QPainterPath bg;
+        bg.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10);
+        p.fillPath(bg, QColor(0x2D, 0x2C, 0x31, 242));
+        p.setPen(QPen(QColor(0x49, 0x45, 0x4F), 1));
+        p.drawPath(bg);
+
+        const QColor accent =
+            kind_ == Kind::Success ? QColor(0xA8, 0xD5, 0xA2) :
+            kind_ == Kind::Error   ? QColor(0xF2, 0xB8, 0xB8) :
+                                     QColor(0xD0, 0xBC, 0xFF);
+        p.setPen(Qt::NoPen);
+        p.setBrush(accent);
+        p.drawEllipse(QPointF(16, height() / 2.0), 4, 4);
+
+        p.setPen(QColor(0xE6, 0xE1, 0xE5));
+        p.drawText(rect().adjusted(30, 0, -12, 0),
+                   Qt::AlignVCenter | Qt::AlignLeft, text_);
+    }
+
+    QString                 text_;
+    Kind                    kind_;
+    QGraphicsOpacityEffect* opacity_ = nullptr;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main Window
 // ─────────────────────────────────────────────────────────────────────────────
 class MainWindow : public QMainWindow {
@@ -3320,8 +3416,9 @@ private slots:
                 doc_custom_name_ = "Recovered";
                 canvas_->request_relayout();
                 emit canvas_->script_changed();
-                statusBar()->showMessage(
-                    "Recovered \xe2\x80\x94 use Save As to keep this script.", 8000);
+                Toast::show_toast(this,
+                    "Recovered \xe2\x80\x94 use Save As to keep this script",
+                    Toast::Kind::Info);
             } catch (const std::exception& e) {
                 QMessageBox::warning(this, "Recover", e.what());
             }
@@ -3335,7 +3432,8 @@ private slots:
         if (p.isEmpty()) return;
         try { screenplay::io::FountainExporter::write(
                   canvas_->ctrl().state().script, p.toStdString());
-              statusBar()->showMessage("Exported.", 3000);
+              Toast::show_toast(this, "Fountain exported \xe2\x80\x94 "
+                                          + QFileInfo(p).fileName());
         } catch (const std::exception& e) { QMessageBox::critical(this,"Error",e.what()); }
     }
 
@@ -3345,7 +3443,8 @@ private slots:
         if (p.isEmpty()) return;
         try { screenplay::io::FDXExporter::write(
                   canvas_->ctrl().state().script, p.toStdString());
-              statusBar()->showMessage("Exported.", 3000);
+              Toast::show_toast(this, "FDX exported \xe2\x80\x94 "
+                                          + QFileInfo(p).fileName());
         } catch (const std::exception& e) { QMessageBox::critical(this,"Error",e.what()); }
     }
 
@@ -3367,8 +3466,8 @@ private slots:
                 printer, canvas_->ctrl().state().script, canvas_->pages(),
                 canvas_->page_geometry(), canvas_->pt_size(),
                 canvas_->scene_num_mode());
-            statusBar()->showMessage(
-                "PDF exported: " + QFileInfo(p).fileName(), 3000);
+            Toast::show_toast(this, "PDF exported \xe2\x80\x94 "
+                                        + QFileInfo(p).fileName());
         } catch (const std::exception& e) {
             QMessageBox::critical(this, "Export error", e.what());
         }
@@ -3412,10 +3511,11 @@ private slots:
             if (n > 0) {
                 canvas_->request_relayout();
                 emit canvas_->script_changed();
-                statusBar()->showMessage(
-                    QString("Replaced %1 occurrence%2.").arg(n).arg(n == 1 ? "" : "s"), 3000);
+                Toast::show_toast(this,
+                    QString("Replaced %1 occurrence%2")
+                        .arg(n).arg(n == 1 ? "" : "s"));
             } else {
-                statusBar()->showMessage("No matches found.", 3000);
+                Toast::show_toast(this, "No matches found", Toast::Kind::Info);
             }
             dlg->close();
         });
@@ -3423,7 +3523,7 @@ private slots:
             int n = canvas_->ctrl().replace_text(
                 find_e->text().toStdString(), repl_e->text().toStdString(), false);
             if (n > 0) { canvas_->request_relayout(); emit canvas_->script_changed(); }
-            else       { statusBar()->showMessage("No matches found.", 3000); }
+            else       { Toast::show_toast(this, "No matches found", Toast::Kind::Info); }
         });
         dlg->show();
     }
@@ -3503,7 +3603,8 @@ private slots:
                     QString("Spell Check (%1)")
                         .arg(canvas_->spell_available() ? "active" : "unavailable"));
         });
-        statusBar()->showMessage("Spell check language updated.", 3000);
+        Toast::show_toast(this, "Spell check language updated",
+                          Toast::Kind::Info);
     }
     void on_title_page() {
         canvas_->edit_title_page(this);
@@ -4279,7 +4380,7 @@ private:
             canvas_->ctrl().mark_clean();
             last_save_time_ = QTime::currentTime().toString("HH:mm");
             QFile::remove(autosave_path());   // work is safe on disk now
-            statusBar()->showMessage("Saved: " + QFileInfo(path).fileName(), 3000);
+            Toast::show_toast(this, "Saved " + QFileInfo(path).fileName());
             update_title();
             update_save_indicator();
         } catch (const std::exception& e) {
