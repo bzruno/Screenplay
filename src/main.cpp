@@ -868,11 +868,8 @@ public:
     void edit_title_page(QWidget* parent) {
         TitlePageDialog dlg(parent, ctrl_.state().script.title_page);
         if (dlg.exec() == QDialog::Accepted) {
-            // Copy current script, update title page, reload
-            auto script = ctrl_.state().script;
-            script.title_page = dlg.result();
-            ctrl_.load_script(std::move(script));
-            update();
+            ctrl_.set_title_page(dlg.result());   // undoable, keeps cursor
+            request_relayout();
             emit script_changed();
         }
     }
@@ -3078,33 +3075,23 @@ private slots:
         form->addRow(btns);
         connect(btn_close, &QPushButton::clicked, dlg, &QDialog::close);
         connect(btn_repl_all, &QPushButton::clicked, this, [this, find_e, repl_e, dlg]{
-            const QString needle = find_e->text();
-            const QString rep    = repl_e->text();
-            if (needle.isEmpty()) return;
-            bool changed = false;
-            for (auto& b : canvas_->ctrl().script_mut().blocks) {
-                QString t = QString::fromStdString(b.text);
-                if (t.contains(needle)) {
-                    b.text = t.replace(needle, rep).toStdString();
-                    changed = true;
-                }
+            int n = canvas_->ctrl().replace_text(
+                find_e->text().toStdString(), repl_e->text().toStdString(), true);
+            if (n > 0) {
+                canvas_->request_relayout();
+                emit canvas_->script_changed();
+                statusBar()->showMessage(
+                    QString("Replaced %1 occurrence%2.").arg(n).arg(n == 1 ? "" : "s"), 3000);
+            } else {
+                statusBar()->showMessage("No matches found.", 3000);
             }
-            if (changed) { canvas_->request_relayout(); emit canvas_->script_changed(); }
             dlg->close();
         });
         connect(btn_repl, &QPushButton::clicked, this, [this, find_e, repl_e]{
-            const QString needle = find_e->text();
-            const QString rep    = repl_e->text();
-            if (needle.isEmpty()) return;
-            for (auto& b : canvas_->ctrl().script_mut().blocks) {
-                QString t = QString::fromStdString(b.text);
-                int idx = t.indexOf(needle);
-                if (idx != -1) {
-                    b.text = t.replace(idx, needle.size(), rep).toStdString();
-                    canvas_->request_relayout(); emit canvas_->script_changed();
-                    return;
-                }
-            }
+            int n = canvas_->ctrl().replace_text(
+                find_e->text().toStdString(), repl_e->text().toStdString(), false);
+            if (n > 0) { canvas_->request_relayout(); emit canvas_->script_changed(); }
+            else       { statusBar()->showMessage("No matches found.", 3000); }
         });
         dlg->show();
     }
@@ -3461,20 +3448,15 @@ private:
             capa_toggle_act_->setChecked(
                 canvas_->ctrl().state().script.title_page.enabled);
             connect(capa_toggle_act_, &QAction::triggered, this, [this](bool checked){
-                auto script = canvas_->ctrl().state().script;
-                script.title_page.enabled = checked;
-                // If toggling ON and no content yet, open the editor immediately
-                if (checked && script.title_page.title.empty()
-                    && script.title_page.authors.empty()) {
-                    canvas_->ctrl().load_script(std::move(script));
-                    canvas_->request_relayout();
-                    emit canvas_->script_changed();
-                    on_title_page();
-                } else {
-                    canvas_->ctrl().load_script(std::move(script));
-                    canvas_->request_relayout();
-                    emit canvas_->script_changed();
-                }
+                auto tp = canvas_->ctrl().state().script.title_page;
+                tp.enabled = checked;
+                // If toggling ON and no content yet, open the editor right after
+                const bool need_editor =
+                    checked && tp.title.empty() && tp.authors.empty();
+                canvas_->ctrl().set_title_page(std::move(tp));  // undoable
+                canvas_->request_relayout();
+                emit canvas_->script_changed();
+                if (need_editor) on_title_page();
                 update_capa_badge();
             });
         }

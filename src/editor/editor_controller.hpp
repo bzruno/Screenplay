@@ -227,6 +227,54 @@ public:
         dismiss_suggestions();
     }
 
+    // ── Find & Replace (undoable) ─────────────────────────────────────────
+
+    // Replaces the first (or all) occurrences of needle across the script.
+    // Returns the number of replacements; 0 leaves the undo stack untouched.
+    int replace_text(const std::string& needle, const std::string& repl,
+                     bool all) {
+        if (needle.empty()) return 0;
+        const QString qneedle = QString::fromStdString(needle);
+        const QString qrepl   = QString::fromStdString(repl);
+
+        bool any = false;
+        for (const auto& b : state_.script.blocks)
+            if (QString::fromStdString(b.text).contains(qneedle)) { any = true; break; }
+        if (!any) return 0;
+
+        int count = 0;
+        record_structural([&] {
+            for (auto& b : state_.script.blocks) {
+                QString t = QString::fromStdString(b.text);
+                if (!t.contains(qneedle)) continue;
+                if (all) {
+                    count += (int)t.count(qneedle);
+                    t.replace(qneedle, qrepl);
+                    b.text = t.toStdString();
+                } else {
+                    t.replace(t.indexOf(qneedle), qneedle.size(), qrepl);
+                    b.text = t.toStdString();
+                    count = 1;
+                    break;
+                }
+            }
+            // Replacements may have shortened the cursor block
+            state_.has_selection = false;
+            auto& cb = current_block();
+            state_.cursor.byte_offset = screenplay::utf8::align_to_cp_start(
+                cb.text, std::min(state_.cursor.byte_offset, cb.text.size()));
+        });
+        return count;
+    }
+
+    // Update the title page as a single undoable step
+    // (previous implementation reloaded the script, wiping undo history).
+    void set_title_page(screenplay::TitlePage tp) {
+        record_structural([&] {
+            state_.script.title_page = std::move(tp);
+        });
+    }
+
     // ── Clipboard helpers ─────────────────────────────────────────────────
 
     std::string copy_selection() const {
