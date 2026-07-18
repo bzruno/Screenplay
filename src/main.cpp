@@ -62,6 +62,7 @@
 #include <QSettings>
 #include <QGraphicsOpacityEffect>
 #include <QPropertyAnimation>
+#include <QVariantAnimation>
 #include <QEasingCurve>
 #include <QPointer>
 
@@ -860,6 +861,16 @@ public:
             emit script_changed();
         });
 
+        // Smooth scrolling (wheel / go-to navigation), 170ms ease-out
+        scroll_anim_.setDuration(170);
+        scroll_anim_.setEasingCurve(QEasingCurve::OutCubic);
+        connect(&scroll_anim_, &QVariantAnimation::valueChanged,
+                this, [this](const QVariant& v){
+            scroll_y_ = v.toFloat();
+            update_popup();
+            update();
+        });
+
         // Thin overlay scrollbar (document position indicator + dragging)
         vscroll_ = new QScrollBar(Qt::Vertical, this);
         vscroll_->setStyleSheet(
@@ -871,6 +882,7 @@ public:
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }");
         connect(vscroll_, &QScrollBar::valueChanged, this, [this](int v){
             if (syncing_scrollbar_) return;
+            scroll_anim_.stop();     // direct drag wins over animation
             scroll_y_ = (float)v;
             update_popup();
             update();
@@ -969,6 +981,15 @@ public:
     const screenplay::layout::PageGeometry& page_geometry() const { return engine_.geometry(); }
     float pt_size() const { return engine_.pt_size(); }
 
+    // Animate scroll_y_ towards target (clamped). 170ms OutCubic.
+    void animate_scroll_to(float target) {
+        target = std::clamp(target, 0.f, max_scroll_y());
+        scroll_anim_.stop();
+        scroll_anim_.setStartValue(scroll_y_);
+        scroll_anim_.setEndValue(target);
+        scroll_anim_.start();
+    }
+
     void scroll_to_page(int page_num) {
         if (pages_.empty()) return;
         const auto& geo  = engine_.geometry();
@@ -977,9 +998,7 @@ public:
         const float gap  = 40.f;
         float py = (float)(page_num - 1) * (ph + gap);
         if (ctrl_.state().script.title_page.enabled) py += ph + gap;
-        scroll_y_ = std::clamp(py, 0.f, max_scroll_y());
-        update_popup();
-        update();
+        animate_scroll_to(py);
     }
 
     void scroll_to_block(size_t block_idx) {
@@ -994,8 +1013,7 @@ public:
             for (const auto& vl : page.lines) {
                 if (vl.block_idx == block_idx && !vl.is_more && !vl.is_contd) {
                     float line_y = py + vl.y * dpi * zoom_;
-                    scroll_y_ = std::clamp(line_y - 60.f, 0.f, max_scroll_y());
-                    update_popup();
+                    animate_scroll_to(line_y - 60.f);
                     return;
                 }
             }
@@ -1408,11 +1426,13 @@ protected:
             emit zoom_changed(zoom_);
             relayout_timer_.start();
         } else {
-            scroll_y_ = std::clamp(
-                scroll_y_ - ev->angleDelta().y() * .8f,
-                0.f, max_scroll_y());
-            update_popup();
-            update();
+            // Chain wheel ticks: retarget from the animation's end value so
+            // successive ticks accumulate instead of restarting.
+            const float base =
+                (scroll_anim_.state() == QAbstractAnimation::Running)
+                    ? scroll_anim_.endValue().toFloat()
+                    : scroll_y_;
+            animate_scroll_to(base - ev->angleDelta().y() * .8f);
         }
     }
 
@@ -1716,11 +1736,15 @@ private:
 
                 const float line_top = py + vl.y * dpi * zoom_ - scroll_y_;
                 const float line_bot = line_top + vl.height * dpi * zoom_;
-                if (line_top < kMargin)
+                // Instant (not animated): typing must never lag the caret.
+                if (line_top < kMargin) {
+                    scroll_anim_.stop();
                     scroll_y_ = std::max(0.f, scroll_y_ + line_top - kMargin);
-                else if (line_bot > (float)height() - kMargin)
+                } else if (line_bot > (float)height() - kMargin) {
+                    scroll_anim_.stop();
                     scroll_y_ = std::min(max_scroll_y(),
                         scroll_y_ + line_bot - ((float)height() - kMargin));
+                }
                 return;
             }
             py += ph + gap;
@@ -2566,6 +2590,7 @@ private:
                                     // consumed by the next update_popup() call
     bool   pending_follow_cursor_ = false;  // scroll caret into view after relayout
     QTimer relayout_timer_, blink_timer_, autosave_timer_, spell_timer_;
+    QVariantAnimation scroll_anim_;   // smooth scrolling (wheel / go-to)
 
     // Mouse drag selection
     bool               mouse_selecting_ = false;
