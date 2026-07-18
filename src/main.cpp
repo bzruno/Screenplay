@@ -693,6 +693,22 @@ public:
             emit script_changed();
         });
 
+        // Thin overlay scrollbar (document position indicator + dragging)
+        vscroll_ = new QScrollBar(Qt::Vertical, this);
+        vscroll_->setStyleSheet(
+            "QScrollBar:vertical { background:transparent; width:10px; margin:0; }"
+            "QScrollBar::handle:vertical { background:#49454F; border-radius:5px;"
+            "                              min-height:32px; }"
+            "QScrollBar::handle:vertical:hover { background:#938F99; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }");
+        connect(vscroll_, &QScrollBar::valueChanged, this, [this](int v){
+            if (syncing_scrollbar_) return;
+            scroll_y_ = (float)v;
+            update_popup();
+            update();
+        });
+
         // Search bar (hidden by default, shown on Ctrl+F)
         search_bar_ = new SearchBar(this);
         search_bar_->hide();
@@ -914,6 +930,18 @@ protected:
 
         // Block type indicator strip (left edge)
         draw_type_strip(painter, st);
+
+        // Keep the overlay scrollbar in sync with the computed document size
+        if (vscroll_) {
+            syncing_scrollbar_ = true;
+            const int max = (int)max_scroll_y();
+            vscroll_->setRange(0, max);
+            vscroll_->setPageStep(height());
+            vscroll_->setSingleStep(48);
+            vscroll_->setValue((int)scroll_y_);
+            vscroll_->setVisible(max > 0);
+            syncing_scrollbar_ = false;
+        }
     }
 
     void keyPressEvent(QKeyEvent* ev) override {
@@ -1357,6 +1385,7 @@ protected:
             int sw = search_bar_->sizeHint().width();
             search_bar_->move(width() - sw - 10, 10);
         }
+        if (vscroll_) vscroll_->setGeometry(width() - 10, 0, 10, height());
         update();
     }
     void mousePressEvent(QMouseEvent* ev) override {
@@ -2317,6 +2346,8 @@ private:
     screenplay::layout::PageList          pages_;
     AutocompletePopup*                    popup_      = nullptr;
     SearchBar*                            search_bar_ = nullptr;
+    QScrollBar*                           vscroll_    = nullptr;
+    bool                                  syncing_scrollbar_ = false;
     SearchState                           search_state_;
 
     // Spell check
@@ -3289,6 +3320,31 @@ private slots:
         }
     }
     void on_fullscreen() { isFullScreen() ? showNormal() : showFullScreen(); }
+
+    // Focus mode: hide every panel/bar, leaving only the page. Dock
+    // visibility is remembered and restored when leaving the mode.
+    void set_focus_mode(bool on) {
+        if (on == focus_mode_) return;
+        focus_mode_ = on;
+        if (on) {
+            focus_prev_scenes_ = scene_dock_->isVisible();
+            focus_prev_stats_  = stats_dock_->isVisible();
+            focus_prev_db_     = db_dock_->isVisible();
+            scene_dock_->hide();
+            stats_dock_->hide();
+            db_dock_->hide();
+            statusBar()->hide();
+            if (menuWidget()) menuWidget()->hide();
+        } else {
+            if (menuWidget()) menuWidget()->show();
+            statusBar()->show();
+            scene_dock_->setVisible(focus_prev_scenes_);
+            stats_dock_->setVisible(focus_prev_stats_);
+            db_dock_->setVisible(focus_prev_db_);
+        }
+        if (act_focus_mode_) act_focus_mode_->setChecked(on);
+        canvas_->setFocus();
+    }
     void on_stats()      { stats_dock_->setVisible(!stats_dock_->isVisible()); }
     void on_database()   { db_dock_->setVisible(!db_dock_->isVisible()); if (db_dock_->isVisible()) refresh_database(); }
 
@@ -3466,6 +3522,7 @@ private:
         QWidget* old_header = menuWidget();
         setup_toolbar();                    // creates new header, calls setMenuWidget()
         if (old_header) old_header->deleteLater();
+        if (focus_mode_ && menuWidget()) menuWidget()->hide();
 
         // Sync dock-visibility checkmarks to actual dock state
         if (act_view_scenes_   && scene_dock_)
@@ -3698,6 +3755,16 @@ private:
             });
         }
         mView->addSeparator();
+        {
+            act_focus_mode_ = mView->addAction("Focus Mode");
+            act_focus_mode_->setCheckable(true);
+            act_focus_mode_->setChecked(focus_mode_);
+            act_focus_mode_->setShortcut(QKeySequence("Ctrl+Shift+F"));
+            act_focus_mode_->setToolTip(
+                "Hide all panels and bars \xe2\x80\x94 just you and the page");
+            connect(act_focus_mode_, &QAction::triggered,
+                    this, &MainWindow::set_focus_mode);
+        }
         mView->addAction("Full Screen", this, &MainWindow::on_fullscreen)->setShortcut(Qt::Key_F11);
 
         // Format
@@ -4249,6 +4316,11 @@ private:
     QAction*          act_view_scenes_   = nullptr;
     QAction*          act_view_stats_    = nullptr;
     QAction*          act_view_database_ = nullptr;
+    QAction*          act_focus_mode_    = nullptr;
+    bool              focus_mode_        = false;
+    bool              focus_prev_scenes_ = false;
+    bool              focus_prev_stats_  = false;
+    bool              focus_prev_db_     = false;
     QString           current_path_;
     QString           doc_custom_name_   = "Untitled";
 };
