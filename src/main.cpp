@@ -763,9 +763,22 @@ public:
 
         edit_ = new QLineEdit;
         edit_->setPlaceholderText("Search\xe2\x80\xa6 (Enter / Shift+Enter)");
-        edit_->setFixedWidth(240);
+        edit_->setFixedWidth(210);
         edit_->setClearButtonEnabled(true);
         lay->addWidget(edit_);
+
+        // Element-type filter: empty query + a type lists every such block
+        type_combo_ = new QComboBox;
+        type_combo_->setToolTip("Search only inside this element type");
+        type_combo_->addItem("All", -1);
+        type_combo_->addItem("Scene",  (int)screenplay::BlockType::SceneHeading);
+        type_combo_->addItem("Action", (int)screenplay::BlockType::Action);
+        type_combo_->addItem("Character", (int)screenplay::BlockType::Character);
+        type_combo_->addItem("Dialogue",  (int)screenplay::BlockType::Dialogue);
+        type_combo_->addItem("Paren.", (int)screenplay::BlockType::Parenthetical);
+        type_combo_->addItem("Transition", (int)screenplay::BlockType::Transition);
+        type_combo_->setFixedHeight(26);
+        lay->addWidget(type_combo_);
 
         match_lbl_ = new QLabel("—");
         match_lbl_->setFixedWidth(54);
@@ -789,12 +802,17 @@ public:
         adjustSize();
 
         connect(edit_,     &QLineEdit::textChanged,  this, &SearchBar::query_changed);
+        connect(type_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int){ emit query_changed(edit_->text()); });
         connect(next_btn,  &QToolButton::clicked,    this, &SearchBar::next_requested);
         connect(prev_btn,  &QToolButton::clicked,    this, &SearchBar::prev_requested);
         connect(cls_btn,   &QToolButton::clicked,    this, &SearchBar::close_requested);
     }
 
     QLineEdit* edit() const { return edit_; }
+
+    // -1 = all types, otherwise a screenplay::BlockType value
+    int type_filter() const { return type_combo_->currentData().toInt(); }
 
     void focus_edit() { edit_->setFocus(); edit_->selectAll(); }
 
@@ -815,8 +833,9 @@ signals:
     void close_requested();
 
 private:
-    QLineEdit* edit_      = nullptr;
-    QLabel*    match_lbl_ = nullptr;
+    QLineEdit* edit_       = nullptr;
+    QComboBox* type_combo_ = nullptr;
+    QLabel*    match_lbl_  = nullptr;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2326,16 +2345,35 @@ private:
     void rebuild_search(const QString& query) {
         search_state_.matches.clear();
         search_state_.current = -1;
-        search_state_.active  = !query.isEmpty();
+
+        // Type filter: -1 = all. With an empty query + a specific type,
+        // every block of that type becomes a match (browse-by-type mode).
+        const int type_filter = search_bar_ ? search_bar_->type_filter() : -1;
+        search_state_.active  = !query.isEmpty() || type_filter >= 0;
 
         if (!search_state_.active) {
             if (search_bar_) search_bar_->set_match_info(-1, 0);
             return;
         }
 
+        auto type_ok = [type_filter](screenplay::BlockType t) {
+            if (type_filter < 0) return true;
+            const auto want = (screenplay::BlockType)type_filter;
+            if (want == screenplay::BlockType::Dialogue &&
+                t == screenplay::BlockType::DualDialogue) return true;
+            return t == want;
+        };
+
         const auto& blocks = ctrl_.state().script.blocks;
         for (size_t bi = 0; bi < blocks.size(); ++bi) {
+            if (!type_ok(blocks[bi].type)) continue;
             QString text = QString::fromStdString(blocks[bi].text);
+            if (query.isEmpty()) {
+                if (!blocks[bi].text.empty())
+                    search_state_.matches.push_back(
+                        { bi, 0, blocks[bi].text.size() });
+                continue;
+            }
             int pos = 0;
             while ((pos = text.indexOf(query, pos, Qt::CaseInsensitive)) != -1) {
                 // Convert QString char index → UTF-8 byte offset
@@ -2357,6 +2395,9 @@ private:
         int n = (int)search_state_.matches.size();
         search_state_.current = ((search_state_.current + dir) % n + n) % n;
         update_search_bar_info();
+        // Bring the active match into view
+        scroll_to_block(search_state_.matches[(size_t)search_state_.current]
+                            .block_idx);
         update();
     }
 
