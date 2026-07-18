@@ -2978,7 +2978,12 @@ private slots:
             this, "Open screenplay",
             QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
             "Todos (*.spl *.fountain *.fdx);;JSON (*.spl);;Fountain (*.fountain);;FDX (*.fdx)");
-        if (path.isEmpty()) return;
+        if (!path.isEmpty()) open_path(path);
+    }
+
+    // Shared open path: used by Open…, Open Recent and drag & drop.
+    void open_path(const QString& path) {
+        if (dirty_confirm()) return;
         try {
             screenplay::Script s;
             QString ext = QFileInfo(path).suffix().toLower();
@@ -2987,6 +2992,7 @@ private slots:
             else                      s=screenplay::io::JsonDeserializer::read(path.toStdString());
             canvas_->ctrl().load_script(std::move(s));
             current_path_ = path;
+            screenplay::config::AppConfig::instance().add_recent_file(path);
             canvas_->request_relayout();
             emit canvas_->script_changed();
 
@@ -3402,6 +3408,12 @@ private:
         auto* mFile = mb->addMenu("&File");
         mFile->addAction("New",         this, &MainWindow::on_new)->setShortcut(QKeySequence::New);
         mFile->addAction("Open\xe2\x80\xa6",  this, &MainWindow::on_open)->setShortcut(QKeySequence::Open);
+        {
+            recent_menu_ = mFile->addMenu("Open Recent");
+            connect(recent_menu_, &QMenu::aboutToShow,
+                    this, &MainWindow::populate_recent_menu);
+            populate_recent_menu();   // set initial enabled state
+        }
         mFile->addAction("Save",        this, &MainWindow::on_save)->setShortcut(QKeySequence::Save);
         mFile->addAction("Save As\xe2\x80\xa6", this, &MainWindow::on_save_as)->setShortcut(QKeySequence("Ctrl+Shift+S"));
         mFile->addSeparator();
@@ -3807,11 +3819,31 @@ private:
         // conflicts that prevented either handler from firing.
     }
 
+    // Rebuild the Open Recent submenu from AppConfig (files pruned if gone).
+    void populate_recent_menu() {
+        if (!recent_menu_) return;
+        recent_menu_->clear();
+        int shown = 0;
+        const QStringList files =
+            screenplay::config::AppConfig::instance().recent_files();
+        for (const QString& f : files) {
+            if (!QFile::exists(f)) continue;
+            QFileInfo fi(f);
+            auto* act = recent_menu_->addAction(
+                QString("%1   \xe2\x80\x94   %2")
+                    .arg(fi.fileName(), fi.absolutePath()));
+            connect(act, &QAction::triggered, this, [this, f]{ open_path(f); });
+            ++shown;
+        }
+        recent_menu_->setEnabled(shown > 0);
+    }
+
     void do_save(const QString& path) {
         try {
             screenplay::io::JsonSerializer::write(
                 canvas_->ctrl().state().script, path.toStdString());
             current_path_ = path;
+            screenplay::config::AppConfig::instance().add_recent_file(path);
             canvas_->ctrl().mark_clean();
             statusBar()->showMessage("Saved: " + QFileInfo(path).fileName(), 3000);
             update_title();
@@ -3941,6 +3973,7 @@ private:
     QLabel*           scn_lbl_      = nullptr;
     QLabel*           blk_type_lbl_ = nullptr;
     QLineEdit*        doc_name_edit_ = nullptr;
+    QMenu*            recent_menu_   = nullptr;
     QLabel*           capa_badge_    = nullptr;
     QAction*          capa_toggle_act_   = nullptr;
     QAction*          spell_status_act_  = nullptr;
