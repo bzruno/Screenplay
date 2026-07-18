@@ -85,37 +85,95 @@
 #include <stdexcept>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MD3 Dark colour palette
+// MD3 colour tokens — mutable so the whole app can flip dark ↔ light.
+// Every widget reads these (directly or via generated stylesheets);
+// MD3::apply() swaps the set, callers restyle afterwards.
 // ─────────────────────────────────────────────────────────────────────────────
 namespace MD3 {
-    const QColor Surface       { 0x1C, 0x1B, 0x1F };  // dark background
-    const QColor SurfaceVar    { 0x49, 0x45, 0x4F };
-    const QColor OnSurface     { 0xE6, 0xE1, 0xE5 };
-    const QColor Primary       { 0xD0, 0xBC, 0xFF };
-    const QColor OnPrimary     { 0x38, 0x00, 0x6B };
-    const QColor PrimaryContainer{ 0x4F, 0x37, 0x8A };
-    const QColor Secondary     { 0xCC, 0xC2, 0xDC };
-    const QColor Outline       { 0x93, 0x8F, 0x99 };
-    const QColor Error         { 0xF2, 0xB8, 0xB8 };
-    const QColor PageBg        { 0xFF, 0xFF, 0xFF };
-    const QColor PageShadow    { 0x00, 0x00, 0x00 };
-    const QColor Canvas        { 0x14, 0x13, 0x18 };  // slightly darker than Surface
+    inline QColor Surface, SurfaceVar, OnSurface, Primary, OnPrimary,
+                  PrimaryContainer, Secondary, Outline, Error,
+                  PageBg, PageShadow, Canvas,
+                  Bg0,        // deepest chrome (status bar, list bg)
+                  Bg1,        // panel / popup surface
+                  Border,     // hairline borders
+                  Text,       // primary UI text
+                  TextDim,    // secondary UI text
+                  HoverBg,    // hover fill
+                  PressedBg,  // pressed fill
+                  GoodAccent, // "saved", match count OK
+                  WarnAccent; // "unsaved", no matches
+    inline bool dark = true;
+
+    inline void apply(bool dark_mode) {
+        dark = dark_mode;
+        if (dark) {
+            Surface          = { 0x1C, 0x1B, 0x1F };
+            SurfaceVar       = { 0x49, 0x45, 0x4F };
+            OnSurface        = { 0xE6, 0xE1, 0xE5 };
+            Primary          = { 0xD0, 0xBC, 0xFF };
+            OnPrimary        = { 0x38, 0x00, 0x6B };
+            PrimaryContainer = { 0x4F, 0x37, 0x8A };
+            Secondary        = { 0xCC, 0xC2, 0xDC };
+            Outline          = { 0x93, 0x8F, 0x99 };
+            Error            = { 0xF2, 0xB8, 0xB8 };
+            PageBg           = { 0xFF, 0xFF, 0xFF };
+            PageShadow       = { 0x00, 0x00, 0x00 };
+            Canvas           = { 0x14, 0x13, 0x18 };
+            Bg0              = { 0x1C, 0x1B, 0x1F };
+            Bg1              = { 0x2D, 0x2C, 0x31 };
+            Border           = { 0x49, 0x45, 0x4F };
+            Text             = { 0xE6, 0xE1, 0xE5 };
+            TextDim          = { 0x93, 0x8F, 0x99 };
+            HoverBg          = { 0x4F, 0x37, 0x8A };
+            PressedBg        = { 0x66, 0x50, 0xA4 };
+            GoodAccent       = { 0xA8, 0xD5, 0xA2 };
+            WarnAccent       = { 0xF2, 0xB8, 0xB8 };
+        } else {
+            Surface          = { 0xF5, 0xF3, 0xF7 };
+            SurfaceVar       = { 0xE0, 0xDC, 0xE5 };
+            OnSurface        = { 0x1C, 0x1B, 0x1F };
+            Primary          = { 0x67, 0x50, 0xA4 };
+            OnPrimary        = { 0xFF, 0xFF, 0xFF };
+            PrimaryContainer = { 0xE9, 0xDD, 0xFF };
+            Secondary        = { 0x62, 0x5B, 0x71 };
+            Outline          = { 0x79, 0x74, 0x7E };
+            Error            = { 0xB3, 0x26, 0x1E };
+            PageBg           = { 0xFF, 0xFF, 0xFF };
+            PageShadow       = { 0x3A, 0x35, 0x41 };
+            Canvas           = { 0xE4, 0xE1, 0xE8 };
+            Bg0              = { 0xEC, 0xE8, 0xEF };
+            Bg1              = { 0xFB, 0xF9, 0xFD };
+            Border           = { 0xCA, 0xC4, 0xD0 };
+            Text             = { 0x1C, 0x1B, 0x1F };
+            TextDim          = { 0x79, 0x74, 0x7E };
+            HoverBg          = { 0xE3, 0xD7, 0xFA };
+            PressedBg        = { 0xD0, 0xBC, 0xFF };
+            GoodAccent       = { 0x2E, 0x7D, 0x32 };
+            WarnAccent       = { 0xB3, 0x26, 0x1E };
+        }
+    }
+
+    // Hex string for stylesheet interpolation ("#RRGGBB").
+    inline QString hx(const QColor& c) { return c.name(QColor::HexRgb); }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Block colours (for the indicator strip)
 // ─────────────────────────────────────────────────────────────────────────────
 static QColor block_color(screenplay::BlockType t) {
+    QColor c;
     switch (t) {
-    case screenplay::BlockType::SceneHeading:  return { 0xD0, 0xBC, 0xFF };
-    case screenplay::BlockType::Action:        return { 0xA8, 0xD5, 0xA2 };
-    case screenplay::BlockType::Character:     return { 0xFF, 0xB4, 0x6B };
-    case screenplay::BlockType::Parenthetical: return { 0xFF, 0xE0, 0x6B };
-    case screenplay::BlockType::Dialogue:      return { 0x6B, 0xC5, 0xFF };
-    case screenplay::BlockType::Transition:    return { 0xFF, 0x6B, 0xB0 };
-    case screenplay::BlockType::DualDialogue: return { 0x6B, 0xC5, 0xFF };
+    case screenplay::BlockType::SceneHeading:  c = { 0xD0, 0xBC, 0xFF }; break;
+    case screenplay::BlockType::Action:        c = { 0xA8, 0xD5, 0xA2 }; break;
+    case screenplay::BlockType::Character:     c = { 0xFF, 0xB4, 0x6B }; break;
+    case screenplay::BlockType::Parenthetical: c = { 0xFF, 0xE0, 0x6B }; break;
+    case screenplay::BlockType::Dialogue:      c = { 0x6B, 0xC5, 0xFF }; break;
+    case screenplay::BlockType::Transition:    c = { 0xFF, 0x6B, 0xB0 }; break;
+    case screenplay::BlockType::DualDialogue:  c = { 0x6B, 0xC5, 0xFF }; break;
     default: return MD3::Outline;
     }
+    // Pastel accents lose contrast on light chrome — darken them there.
+    return MD3::dark ? c : c.darker(150);
 }
 
 static const char* block_label(screenplay::BlockType t) {
@@ -139,9 +197,10 @@ namespace icons {
 
 enum class Id { New, Open, Save, Pdf, Print, Undo, Redo, Search,
                 Scenes, Characters, Stats, Focus,
-                ChevronUp, ChevronDown, Close, ZoomIn, ZoomOut };
+                ChevronUp, ChevronDown, Close, ZoomIn, ZoomOut,
+                Sun, Moon };
 
-inline QIcon make(Id id, const QColor& color = QColor(0xCC, 0xC2, 0xDC)) {
+inline QIcon make(Id id, const QColor& color = MD3::Secondary) {
     constexpr int S = 24, dpr = 2;              // 2x raster for HiDPI
     QPixmap pm(S * dpr, S * dpr);
     pm.setDevicePixelRatio(dpr);
@@ -261,12 +320,117 @@ inline QIcon make(Id id, const QColor& color = QColor(0xCC, 0xC2, 0xDC)) {
         path.moveTo(15, 15); path.lineTo(20, 20);
         path.moveTo(8, 10.5); path.lineTo(13, 10.5);
         break;
+    case Id::Sun: {
+        path.addEllipse(QPointF(12, 12), 3.8, 3.8);
+        static const double dirs[8][2] = {
+            {1,0},{0.707,0.707},{0,1},{-0.707,0.707},
+            {-1,0},{-0.707,-0.707},{0,-1},{0.707,-0.707}};
+        for (const auto& d : dirs) {
+            path.moveTo(12 + 6.2 * d[0], 12 + 6.2 * d[1]);
+            path.lineTo(12 + 9.0 * d[0], 12 + 9.0 * d[1]);
+        }
+        break;
+    }
+    case Id::Moon:
+        // Crescent: outer circle arc + inner arc bridging the gap
+        path.arcMoveTo(QRectF(4, 4, 16, 16), 100);
+        path.arcTo(QRectF(4, 4, 16, 16), 100, 290);
+        path.arcTo(QRectF(10.6, -0.78, 10.04, 10.04), -48.6, -133);
+        break;
     }
     p.drawPath(path);
     return QIcon(pm);
 }
 
 } // namespace icons
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Application-wide palette + stylesheet, generated from the MD3 tokens.
+// Called at startup and again on every theme toggle.
+// ─────────────────────────────────────────────────────────────────────────────
+static void apply_app_theme() {
+    QPalette pal;
+    pal.setColor(QPalette::Window,          MD3::Surface);
+    pal.setColor(QPalette::WindowText,      MD3::OnSurface);
+    pal.setColor(QPalette::Base,            MD3::Bg1);
+    pal.setColor(QPalette::AlternateBase,   MD3::SurfaceVar);
+    pal.setColor(QPalette::Text,            MD3::OnSurface);
+    pal.setColor(QPalette::Button,          MD3::SurfaceVar);
+    pal.setColor(QPalette::ButtonText,      MD3::OnSurface);
+    pal.setColor(QPalette::Highlight,       MD3::PrimaryContainer);
+    pal.setColor(QPalette::HighlightedText,
+                 MD3::dark ? MD3::Primary : MD3::OnSurface);
+    pal.setColor(QPalette::ToolTipBase,     MD3::Bg1);
+    pal.setColor(QPalette::ToolTipText,     MD3::Text);
+    pal.setColor(QPalette::PlaceholderText, MD3::Outline);
+    qApp->setPalette(pal);
+
+    QString ss = QString::fromUtf8(
+        // Toolbar
+        "QToolBar { background:{bg1}; border-bottom:1px solid {border};"
+        "           spacing:3px; padding:4px; }"
+        "QToolBar QToolButton { color:{text}; padding:4px 8px;"
+        "           border-radius:8px; font-size:11px; font-family:'Segoe UI'; }"
+        "QToolBar QToolButton:hover { background:{hover}; }"
+        "QToolBar QToolButton:pressed { background:{pressed}; }"
+        "QToolBar::separator { background:{border}; width:1px; margin:4px 2px; }"
+        // Dock
+        "QDockWidget { color:{text}; font-family:'Segoe UI'; font-size:12px; }"
+        "QDockWidget::title { background:{bg1}; padding:6px;"
+        "           border-bottom:1px solid {border}; }"
+        // Status bar
+        "QStatusBar { background:{bg0}; border-top:1px solid {border}; }"
+        // Menu bar
+        "QMenuBar { background:{bg1}; color:{text}; border-bottom:1px solid {border};"
+        "           font-family:'Segoe UI'; font-size:12px; padding:2px 4px; }"
+        "QMenuBar::item { padding:4px 10px; border-radius:4px; }"
+        "QMenuBar::item:selected { background:{hover}; }"
+        // Menus
+        "QMenu { background:{bg1}; color:{text}; border:1px solid {border};"
+        "        border-radius:8px; padding:4px; }"
+        "QMenu::item { padding:6px 24px; border-radius:6px; }"
+        "QMenu::item:selected { background:{hover}; }"
+        "QMenu::separator { height:1px; background:{border}; margin:4px 8px; }"
+        // Message boxes
+        "QMessageBox { background:{bg1}; color:{text}; }"
+        // Scroll bar
+        "QScrollBar:vertical { background:{bg0}; width:8px; border-radius:4px; }"
+        "QScrollBar::handle:vertical { background:{border}; border-radius:4px; }"
+        // Tool buttons (search bar, status bar zoom, dock titles)
+        "QToolButton { border:none; border-radius:6px; padding:2px; color:{text}; }"
+        "QToolButton:hover { background:{hover}; }"
+        "QToolButton:pressed { background:{pressed}; }"
+        "QToolButton:disabled { color:{dim}; }"
+        // Push buttons (dialogs)
+        "QPushButton { background:{btn}; color:{text}; border:none;"
+        "              border-radius:6px; padding:6px 14px; }"
+        "QPushButton:hover { background:{hover}; }"
+        "QPushButton:pressed { background:{pressed}; }"
+        "QPushButton:disabled { background:{bg1}; color:{dim}; }"
+        // Line edits — visible focus ring (widgets with own styles override)
+        "QLineEdit { background:{bg1}; color:{text}; border:1px solid {border};"
+        "            border-radius:6px; padding:3px 6px;"
+        "            selection-background-color:{hover}; }"
+        "QLineEdit:focus { border:1px solid {primary}; }"
+        // Combo boxes
+        "QComboBox { background:{bg1}; color:{text}; border:1px solid {border};"
+        "            border-radius:6px; padding:3px 8px; }"
+        "QComboBox:focus { border:1px solid {primary}; }"
+        // Tooltips
+        "QToolTip { background:{bg1}; color:{text}; border:1px solid {border};"
+        "           padding:4px 8px; }");
+
+    ss.replace("{bg0}",     MD3::hx(MD3::Bg0));
+    ss.replace("{bg1}",     MD3::hx(MD3::Bg1));
+    ss.replace("{border}",  MD3::hx(MD3::Border));
+    ss.replace("{text}",    MD3::hx(MD3::Text));
+    ss.replace("{dim}",     MD3::hx(MD3::TextDim));
+    ss.replace("{hover}",   MD3::hx(MD3::HoverBg));
+    ss.replace("{pressed}", MD3::hx(MD3::PressedBg));
+    ss.replace("{primary}", MD3::hx(MD3::Primary));
+    ss.replace("{btn}",     MD3::hx(MD3::SurfaceVar));
+    qApp->setStyleSheet(ss);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Font resolver + quality helpers
@@ -651,9 +815,11 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
 
         // Popup body background
+        QColor body(MD3::Bg1); body.setAlpha(245);
+        QColor head(MD3::Bg0); head.setAlpha(245);
         QPainterPath bg;
         bg.addRoundedRect(rect(), 8, 8);
-        p.fillPath(bg, QColor(0x2D, 0x2C, 0x31, 245));
+        p.fillPath(bg, body);
         p.setPen(QPen(MD3::Outline, 1));
         p.drawPath(bg);
 
@@ -661,9 +827,9 @@ protected:
         {
             QPainterPath hdr_path;
             hdr_path.addRoundedRect(QRectF(0, 0, width(), kHeaderH + 8), 8, 8);
-            p.fillPath(hdr_path, QColor(0x22, 0x21, 0x26, 245));
+            p.fillPath(hdr_path, head);
             p.fillRect(QRectF(0, kHeaderH / 2, width(), kHeaderH / 2 + 1),
-                       QColor(0x22, 0x21, 0x26, 245));
+                       head);
 
             QFont hf; hf.setFamily("Segoe UI"); hf.setPixelSize(9); hf.setBold(true);
             apply_render_quality(hf);
@@ -695,7 +861,8 @@ protected:
                 QColor sel_col = block_color(block_type_);
                 sel_col.setAlpha(180);
                 p.fillPath(sel_bg, sel_col);
-                p.setPen(QColor(0x1A, 0x1A, 0x1A));
+                // Dark theme: pastel fill → dark text. Light: darkened fill → white.
+                p.setPen(MD3::dark ? QColor(0x1A, 0x1A, 0x1A) : QColor(Qt::white));
             } else {
                 p.setPen(MD3::OnSurface);
             }
@@ -796,9 +963,12 @@ public:
             lay->addWidget(b);
             return b;
         };
-        auto* prev_btn = mk_btn(icons::Id::ChevronUp,   "Previous match (Shift+Enter)");
-        auto* next_btn = mk_btn(icons::Id::ChevronDown, "Next match (Enter)");
-        auto* cls_btn  = mk_btn(icons::Id::Close,       "Close search (Esc)");
+        prev_btn_ = mk_btn(icons::Id::ChevronUp,   "Previous match (Shift+Enter)");
+        next_btn_ = mk_btn(icons::Id::ChevronDown, "Next match (Enter)");
+        cls_btn_  = mk_btn(icons::Id::Close,       "Close search (Esc)");
+        auto* prev_btn = prev_btn_;
+        auto* next_btn = next_btn_;
+        auto* cls_btn  = cls_btn_;
 
         adjustSize();
 
@@ -820,11 +990,18 @@ public:
     void set_match_info(int current, int total) {
         if (total == 0) {
             match_lbl_->setText(edit_->text().isEmpty() ? "—" : "0");
-            match_lbl_->setStyleSheet("color:#F28B82;");
+            match_lbl_->setStyleSheet("color:" + MD3::hx(MD3::WarnAccent) + ";");
         } else {
             match_lbl_->setText(QString("%1/%2").arg(current + 1).arg(total));
-            match_lbl_->setStyleSheet("color:#A8D5A2;");
+            match_lbl_->setStyleSheet("color:" + MD3::hx(MD3::GoodAccent) + ";");
         }
+    }
+
+    // Re-apply theme-dependent bits (button icons pick up the new accent).
+    void restyle() {
+        prev_btn_->setIcon(icons::make(icons::Id::ChevronUp));
+        next_btn_->setIcon(icons::make(icons::Id::ChevronDown));
+        cls_btn_ ->setIcon(icons::make(icons::Id::Close));
     }
 
 signals:
@@ -834,9 +1011,12 @@ signals:
     void close_requested();
 
 private:
-    QLineEdit* edit_       = nullptr;
-    QComboBox* type_combo_ = nullptr;
-    QLabel*    match_lbl_  = nullptr;
+    QLineEdit*   edit_       = nullptr;
+    QComboBox*   type_combo_ = nullptr;
+    QLabel*      match_lbl_  = nullptr;
+    QToolButton* prev_btn_   = nullptr;
+    QToolButton* next_btn_   = nullptr;
+    QToolButton* cls_btn_    = nullptr;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -873,13 +1053,7 @@ public:
 
         // Thin overlay scrollbar (document position indicator + dragging)
         vscroll_ = new QScrollBar(Qt::Vertical, this);
-        vscroll_->setStyleSheet(
-            "QScrollBar:vertical { background:transparent; width:10px; margin:0; }"
-            "QScrollBar::handle:vertical { background:#49454F; border-radius:5px;"
-            "                              min-height:32px; }"
-            "QScrollBar::handle:vertical:hover { background:#938F99; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }");
+        style_scrollbar();
         connect(vscroll_, &QScrollBar::valueChanged, this, [this](int v){
             if (syncing_scrollbar_) return;
             scroll_anim_.stop();     // direct drag wins over animation
@@ -1031,6 +1205,14 @@ public:
     bool spell_available() const { return spell_checker_.available(); }
 
     void show_search() { open_search(); }
+
+    // Re-apply theme-dependent styling after MD3::apply() flipped the tokens.
+    void apply_theme_refresh() {
+        style_scrollbar();
+        if (search_bar_) search_bar_->restyle();
+        update_popup();
+        update();
+    }
 
     // ── Character dialogue highlight ──────────────────────────────────────
     // Toggle: highlighting the already-active character clears it.
@@ -1705,6 +1887,20 @@ private:
                 break;
             }
         }
+    }
+
+    void style_scrollbar() {
+        if (!vscroll_) return;
+        QString ss = QString::fromUtf8(
+            "QScrollBar:vertical { background:transparent; width:10px; margin:0; }"
+            "QScrollBar::handle:vertical { background:{border}; border-radius:5px;"
+            "                              min-height:32px; }"
+            "QScrollBar::handle:vertical:hover { background:{dim}; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }");
+        ss.replace("{border}", MD3::hx(MD3::Border));
+        ss.replace("{dim}",    MD3::hx(MD3::TextDim));
+        vscroll_->setStyleSheet(ss);
     }
 
     // ── Keep the caret line inside the viewport (Final Draft behaviour) ───
@@ -2742,7 +2938,6 @@ class StatsPanel : public QWidget {
     Q_OBJECT
 public:
     explicit StatsPanel(QWidget* p = nullptr) : QWidget(p) {
-        setStyleSheet("background: transparent; color: #E6E1E5; font-size: 12px;");
         auto* lay = new QVBoxLayout(this);
         lay->setSpacing(5); lay->setContentsMargins(10,10,10,10);
         auto mk = [&](const QString& t) {
@@ -2756,8 +2951,6 @@ public:
         auto* ct = new QLabel("Characters:"); ct->setStyleSheet("font-weight:bold;");
         lay->addWidget(ct);
         char_list_ = new QListWidget;
-        char_list_->setStyleSheet(
-            "QListWidget { background:#2D2C31; border-radius:8px; color:#E6E1E5; font-size:11px; }");
         char_list_->setMaximumHeight(160);
         char_list_->setToolTip("Click a character to highlight their dialogue");
         lay->addWidget(char_list_);
@@ -2767,6 +2960,19 @@ public:
                 [this](QListWidgetItem* item) {
             emit character_clicked(item->data(Qt::UserRole).toString());
         });
+
+        restyle();
+    }
+
+    void restyle() {
+        setStyleSheet(QString("background:transparent; color:%1; font-size:12px;")
+                          .arg(MD3::hx(MD3::Text)));
+        char_list_->setStyleSheet(
+            QString("QListWidget { background:%1; border-radius:8px;"
+                    "              color:%2; font-size:11px; }"
+                    "QListWidget::item:selected { background:%3; }")
+                .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Text),
+                     MD3::hx(MD3::HoverBg)));
     }
 
     void refresh(const screenplay::stats::ScriptStats& s) {
@@ -2804,12 +3010,6 @@ public:
         using LC = screenplay::config::LanguageConfig;
         auto tr = [](const char* k){ return QString::fromUtf8(LC::tr(k)); };
 
-        static const char* kTableStyle =
-            "QTableWidget { background:#2D2C31; color:#E6E1E5; border:none; font-size:11px; }"
-            "QHeaderView::section { background:#1C1B1F; color:#CCC2DC; border:none;"
-            "                       padding:4px; font-size:10px; font-weight:bold; }"
-            "QTableWidget::item:selected { background:#4F378A; }";
-
         auto* lay = new QVBoxLayout(this);
         lay->setContentsMargins(0, 0, 0, 0);
         lay->setSpacing(2);
@@ -2839,11 +3039,6 @@ public:
 
         // ── Tabs ────────────────────────────────────────────────────────────
         tabs_ = new QTabWidget;
-        tabs_->setStyleSheet(
-            "QTabWidget::pane { border:none; }"
-            "QTabBar::tab { background:#2D2C31; color:#E6E1E5; padding:6px 10px;"
-            "               border:none; font-size:11px; }"
-            "QTabBar::tab:selected { background:#4F378A; border-radius:4px 4px 0 0; }");
 
         // ── Tab 1: Scenes ──────────────────────────────────────────────────
         scene_table_ = new QTableWidget;
@@ -2866,7 +3061,6 @@ public:
         scene_table_->setAlternatingRowColors(false);
         scene_table_->setSortingEnabled(true);
         scene_table_->setContextMenuPolicy(Qt::CustomContextMenu);
-        scene_table_->setStyleSheet(kTableStyle);
         tabs_->addTab(scene_table_, tr("db_tab_scenes"));
 
         // ── Tab 2: Characters ──────────────────────────────────────────────
@@ -2887,7 +3081,6 @@ public:
         char_table_->setAlternatingRowColors(true);
         char_table_->setSortingEnabled(true);
         char_table_->setContextMenuPolicy(Qt::CustomContextMenu);
-        char_table_->setStyleSheet(kTableStyle);
         tabs_->addTab(char_table_, tr("db_tab_chars"));
 
         // ── Tab 3: Dialogue ────────────────────────────────────────────────
@@ -2906,15 +3099,15 @@ public:
         dial_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
         dial_table_->setAlternatingRowColors(true);
         dial_table_->setSortingEnabled(false);
-        dial_table_->setStyleSheet(kTableStyle);
         tabs_->addTab(dial_table_, tr("db_tab_dialogue"));
 
         lay->addWidget(tabs_, 1);
 
         // ── Stats footer ────────────────────────────────────────────────────
         stats_lbl_ = new QLabel;
-        stats_lbl_->setStyleSheet("color:#938F99; font-size:10px; padding:2px 6px;");
         lay->addWidget(stats_lbl_);
+
+        restyle();
 
         // ── Connections ────────────────────────────────────────────────────
         connect(filter_edit_, &QLineEdit::textChanged,
@@ -3009,6 +3202,33 @@ public:
         rebuild_filter_combos();
         populate_all();
         apply_filter();
+    }
+
+    void restyle() {
+        QString table_ss = QString::fromUtf8(
+            "QTableWidget { background:{bg1}; color:{text}; border:none; font-size:11px; }"
+            "QHeaderView::section { background:{bg0}; color:{dim}; border:none;"
+            "                       padding:4px; font-size:10px; font-weight:bold; }"
+            "QTableWidget::item:selected { background:{hover}; }");
+        table_ss.replace("{bg0}",   MD3::hx(MD3::Bg0));
+        table_ss.replace("{bg1}",   MD3::hx(MD3::Bg1));
+        table_ss.replace("{text}",  MD3::hx(MD3::Text));
+        table_ss.replace("{dim}",   MD3::hx(MD3::Secondary));
+        table_ss.replace("{hover}", MD3::hx(MD3::HoverBg));
+        scene_table_->setStyleSheet(table_ss);
+        char_table_ ->setStyleSheet(table_ss);
+        dial_table_ ->setStyleSheet(table_ss);
+
+        tabs_->setStyleSheet(QString::fromUtf8(
+            "QTabWidget::pane { border:none; }"
+            "QTabBar::tab { background:%1; color:%2; padding:6px 10px;"
+            "               border:none; font-size:11px; }"
+            "QTabBar::tab:selected { background:%3; border-radius:4px 4px 0 0; }")
+            .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Text), MD3::hx(MD3::HoverBg)));
+
+        stats_lbl_->setStyleSheet(
+            QString("color:%1; font-size:10px; padding:2px 6px;")
+                .arg(MD3::hx(MD3::TextDim)));
     }
 
 signals:
@@ -3363,21 +3583,22 @@ private:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
+        QColor body(MD3::Bg1); body.setAlpha(246);
         QPainterPath bg;
         bg.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10);
-        p.fillPath(bg, QColor(0x2D, 0x2C, 0x31, 242));
-        p.setPen(QPen(QColor(0x49, 0x45, 0x4F), 1));
+        p.fillPath(bg, body);
+        p.setPen(QPen(MD3::Border, 1));
         p.drawPath(bg);
 
         const QColor accent =
-            kind_ == Kind::Success ? QColor(0xA8, 0xD5, 0xA2) :
-            kind_ == Kind::Error   ? QColor(0xF2, 0xB8, 0xB8) :
-                                     QColor(0xD0, 0xBC, 0xFF);
+            kind_ == Kind::Success ? MD3::GoodAccent :
+            kind_ == Kind::Error   ? MD3::WarnAccent :
+                                     MD3::Primary;
         p.setPen(Qt::NoPen);
         p.setBrush(accent);
         p.drawEllipse(QPointF(16, height() / 2.0), 4, 4);
 
-        p.setPen(QColor(0xE6, 0xE1, 0xE5));
+        p.setPen(MD3::Text);
         p.drawText(rect().adjusted(30, 0, -12, 0),
                    Qt::AlignVCenter | Qt::AlignLeft, text_);
     }
@@ -3476,10 +3697,12 @@ private slots:
         if (!save_lbl_) return;
         if (canvas_->ctrl().state().dirty) {
             save_lbl_->setText("\xe2\x97\x8f Unsaved");
-            save_lbl_->setStyleSheet("color:#F2B8B8; font-size:11px;");
+            save_lbl_->setStyleSheet(
+                "color:" + MD3::hx(MD3::WarnAccent) + "; font-size:11px;");
         } else if (!last_save_time_.isEmpty()) {
             save_lbl_->setText("Saved " + last_save_time_);
-            save_lbl_->setStyleSheet("color:#A8D5A2; font-size:11px;");
+            save_lbl_->setStyleSheet(
+                "color:" + MD3::hx(MD3::GoodAccent) + "; font-size:11px;");
         } else {
             save_lbl_->clear();
         }
@@ -3945,8 +4168,8 @@ private:
         // ── ROW 1 — Title bar area: logo + editable document name ────────
         auto* row1 = new QWidget;
         row1->setFixedHeight(40);
-        row1->setStyleSheet(
-            "background:#2D2C31; border-bottom:1px solid #49454F;");
+        row1->setStyleSheet(QString("background:%1; border-bottom:1px solid %2;")
+                                .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Border)));
         auto* row1_lay = new QHBoxLayout(row1);
         row1_lay->setContentsMargins(8, 4, 8, 4);
         row1_lay->setSpacing(6);
@@ -3966,9 +4189,10 @@ private:
         doc_name_edit_ = new QLineEdit("Untitled");
         doc_name_edit_->setFrame(false);
         doc_name_edit_->setStyleSheet(
-            "QLineEdit { background:transparent; color:#E6E1E5;"
-            "            font-size:14px; font-weight:bold; border:none;"
-            "            font-family:'Segoe UI'; padding:2px 4px; }");
+            QString("QLineEdit { background:transparent; color:%1;"
+                    "            font-size:14px; font-weight:bold; border:none;"
+                    "            font-family:'Segoe UI'; padding:2px 4px; }")
+                .arg(MD3::hx(MD3::Text)));
         doc_name_edit_->setMinimumWidth(160);
         doc_name_edit_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         doc_name_edit_->setToolTip(
@@ -4175,6 +4399,15 @@ private:
         }
         mView->addSeparator();
         {
+            act_theme_ = mView->addAction(
+                MD3::dark ? "Light Theme" : "Dark Theme");
+            act_theme_->setIcon(icons::make(
+                MD3::dark ? icons::Id::Sun : icons::Id::Moon));
+            act_theme_->setToolTip("Toggle light / dark theme");
+            connect(act_theme_, &QAction::triggered,
+                    this, &MainWindow::on_toggle_theme);
+        }
+        {
             act_focus_mode_ = mView->addAction("Focus Mode");
             act_focus_mode_->setCheckable(true);
             act_focus_mode_->setChecked(focus_mode_);
@@ -4294,8 +4527,8 @@ private:
         // ═══════════════════════════════════════════════════════════════════
         auto* row3 = new QWidget;
         row3->setFixedHeight(30);
-        row3->setStyleSheet(
-            "background:#2D2C31; border-bottom:1px solid #49454F;");
+        row3->setStyleSheet(QString("background:%1; border-bottom:1px solid %2;")
+                                .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Border)));
         auto* row3_lay = new QHBoxLayout(row3);
         row3_lay->setContentsMargins(6, 0, 6, 0);
         row3_lay->setSpacing(2);
@@ -4306,17 +4539,18 @@ private:
             btn->setFixedSize(26, 26);
             btn->setIconSize(QSize(18, 18));
             btn->setFocusPolicy(Qt::NoFocus);    // keep keyboard focus on canvas
-            btn->setStyleSheet(
+            btn->setStyleSheet(QString(
                 "QToolButton { border:none; padding:2px; border-radius:6px; }"
-                "QToolButton:hover { background:#4F378A; }"
-                "QToolButton:pressed { background:#6650A4; }"
-                "QToolButton:checked { background:#4F378A; }");
+                "QToolButton:hover { background:%1; }"
+                "QToolButton:pressed { background:%2; }"
+                "QToolButton:checked { background:%1; }")
+                .arg(MD3::hx(MD3::HoverBg), MD3::hx(MD3::PressedBg)));
             row3_lay->addWidget(btn);
         };
         auto add_sep = [&] {
             auto* sep = new QFrame;
             sep->setFrameShape(QFrame::VLine);
-            sep->setStyleSheet("color:#49454F;");
+            sep->setStyleSheet("color:" + MD3::hx(MD3::Border) + ";");
             sep->setFixedHeight(18);
             row3_lay->addWidget(sep);
         };
@@ -4339,6 +4573,7 @@ private:
         add_tool(act_view_database_);
         add_tool(act_view_stats_);
         add_sep();
+        add_tool(act_theme_);
         add_tool(act_focus_mode_);
 
         header_vbox->addWidget(row3);   // Row 3 added THIRD → below menu bar
@@ -4349,55 +4584,63 @@ private:
     void setup_statusbar() {
         // Current block type — left side, always visible while writing
         blk_type_lbl_ = new QLabel;
-        blk_type_lbl_->setStyleSheet(
-            "color:#D0BCFF; font-size:11px; font-weight:bold; padding-left:6px;");
         statusBar()->addWidget(blk_type_lbl_);
 
         save_lbl_ = new QLabel;
-        save_lbl_->setStyleSheet("color:#938F99; font-size:11px;");
         statusBar()->addPermanentWidget(save_lbl_);
 
         word_lbl_ = new QLabel("Words: 0");
-        word_lbl_->setStyleSheet("color:#A8D5A2; font-size:11px;");
         statusBar()->addPermanentWidget(word_lbl_);
 
         scn_lbl_ = new QLabel("Scenes: 0");
-        scn_lbl_->setStyleSheet("color:#CCC2DC; font-size:11px;");
         statusBar()->addPermanentWidget(scn_lbl_);
 
         runtime_lbl_ = new QLabel("~0min");
-        runtime_lbl_->setStyleSheet("color:#CCC2DC; font-size:11px;");
         statusBar()->addPermanentWidget(runtime_lbl_);
 
         pg_lbl_ = new QLabel("Page 0/0");
-        pg_lbl_->setStyleSheet("color:#CCC2DC; font-size:11px;");
         statusBar()->addPermanentWidget(pg_lbl_);
 
         // Zoom controls on the right of the status bar
-        auto* zm_out = new QToolButton;
-        zm_out->setIcon(icons::make(icons::Id::ZoomOut));
-        zm_out->setIconSize(QSize(14, 14));
-        zm_out->setFixedSize(22, 22);
-        zm_out->setToolTip("Zoom out (Ctrl+-)");
-        zm_out->setFocusPolicy(Qt::NoFocus);
-        connect(zm_out, &QToolButton::clicked, this, &MainWindow::on_zoom_out);
-        statusBar()->addPermanentWidget(zm_out);
+        zm_out_btn_ = new QToolButton;
+        zm_out_btn_->setIconSize(QSize(14, 14));
+        zm_out_btn_->setFixedSize(22, 22);
+        zm_out_btn_->setToolTip("Zoom out (Ctrl+-)");
+        zm_out_btn_->setFocusPolicy(Qt::NoFocus);
+        connect(zm_out_btn_, &QToolButton::clicked, this, &MainWindow::on_zoom_out);
+        statusBar()->addPermanentWidget(zm_out_btn_);
 
         zoom_lbl_ = new QLabel("100%");
         zoom_lbl_->setFixedWidth(44);
         zoom_lbl_->setAlignment(Qt::AlignCenter);
-        zoom_lbl_->setStyleSheet("color:#E6E1E5; font-size:11px;");
         zoom_lbl_->setToolTip("Zoom (Ctrl+scroll on the page)");
         statusBar()->addPermanentWidget(zoom_lbl_);
 
-        auto* zm_in = new QToolButton;
-        zm_in->setIcon(icons::make(icons::Id::ZoomIn));
-        zm_in->setIconSize(QSize(14, 14));
-        zm_in->setFixedSize(22, 22);
-        zm_in->setToolTip("Zoom in (Ctrl++)");
-        zm_in->setFocusPolicy(Qt::NoFocus);
-        connect(zm_in, &QToolButton::clicked, this, &MainWindow::on_zoom_in);
-        statusBar()->addPermanentWidget(zm_in);
+        zm_in_btn_ = new QToolButton;
+        zm_in_btn_->setIconSize(QSize(14, 14));
+        zm_in_btn_->setFixedSize(22, 22);
+        zm_in_btn_->setToolTip("Zoom in (Ctrl++)");
+        zm_in_btn_->setFocusPolicy(Qt::NoFocus);
+        connect(zm_in_btn_, &QToolButton::clicked, this, &MainWindow::on_zoom_in);
+        statusBar()->addPermanentWidget(zm_in_btn_);
+
+        restyle_statusbar();
+    }
+
+    void restyle_statusbar() {
+        auto lbl_style = [](const QColor& c, const char* extra = "") {
+            return QString("color:%1; font-size:11px; %2")
+                       .arg(MD3::hx(c), extra);
+        };
+        blk_type_lbl_->setStyleSheet(
+            lbl_style(MD3::Primary, "font-weight:bold; padding-left:6px;"));
+        word_lbl_   ->setStyleSheet(lbl_style(MD3::GoodAccent));
+        scn_lbl_    ->setStyleSheet(lbl_style(MD3::Secondary));
+        runtime_lbl_->setStyleSheet(lbl_style(MD3::Secondary));
+        pg_lbl_     ->setStyleSheet(lbl_style(MD3::Secondary));
+        zoom_lbl_   ->setStyleSheet(lbl_style(MD3::Text));
+        zm_out_btn_->setIcon(icons::make(icons::Id::ZoomOut));
+        zm_in_btn_ ->setIcon(icons::make(icons::Id::ZoomIn));
     }
 
     void setup_scene_dock() {
@@ -4410,19 +4653,13 @@ private:
         scene_filter_edit_ = new QLineEdit;
         scene_filter_edit_->setPlaceholderText("Filter scenes\xe2\x80\xa6");
         scene_filter_edit_->setClearButtonEnabled(true);
-        scene_filter_edit_->setStyleSheet(
-            "QLineEdit { background:#1C1B1F; color:#E6E1E5; border:none;"
-            "            border-bottom:1px solid #49454F; padding:6px 8px;"
-            "            font-size:11px; }");
         dc_lay->addWidget(scene_filter_edit_);
         connect(scene_filter_edit_, &QLineEdit::textChanged,
                 this, [this](const QString&){ apply_scene_filter(); });
 
         scene_list_ = new QListWidget;
-        scene_list_->setStyleSheet(
-            "QListWidget { background:#2D2C31; border:none; color:#E6E1E5; font-size:11px; }"
-            "QListWidget::item:selected { background:#4F378A; border-radius:6px; }");
         scene_list_->setContextMenuPolicy(Qt::CustomContextMenu);
+        restyle_scene_dock();
         connect(scene_list_, &QWidget::customContextMenuRequested,
                 this, &MainWindow::scene_context_menu);
         dc_lay->addWidget(scene_list_);
@@ -4455,6 +4692,22 @@ private:
                 }
             }
         });
+    }
+
+    // Flip dark ↔ light and restyle every themed surface.
+    void on_toggle_theme() {
+        MD3::apply(!MD3::dark);
+        QSettings().setValue("view/dark_theme", MD3::dark);
+        apply_app_theme();
+        rebuild_menus();            // header rows + action icons re-created
+        restyle_statusbar();
+        restyle_scene_dock();
+        stats_panel_->restyle();
+        db_panel_->restyle();
+        canvas_->apply_theme_refresh();
+        update_save_indicator();
+        Toast::show_toast(this,
+            MD3::dark ? "Dark theme" : "Light theme", Toast::Kind::Info);
     }
 
     // Shared by the Stats and Database panels.
@@ -4641,6 +4894,18 @@ private:
         }
     }
 
+    void restyle_scene_dock() {
+        scene_filter_edit_->setStyleSheet(QString(
+            "QLineEdit { background:%1; color:%2; border:none;"
+            "            border-bottom:1px solid %3; border-radius:0;"
+            "            padding:6px 8px; font-size:11px; }")
+            .arg(MD3::hx(MD3::Bg0), MD3::hx(MD3::Text), MD3::hx(MD3::Border)));
+        scene_list_->setStyleSheet(QString(
+            "QListWidget { background:%1; border:none; color:%2; font-size:11px; }"
+            "QListWidget::item:selected { background:%3; border-radius:6px; }")
+            .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Text), MD3::hx(MD3::HoverBg)));
+    }
+
     void apply_scene_filter() {
         if (!scene_filter_edit_) return;
         const QString q = scene_filter_edit_->text();
@@ -4784,6 +5049,9 @@ private:
     QAction*          act_view_stats_    = nullptr;
     QAction*          act_view_database_ = nullptr;
     QAction*          act_focus_mode_    = nullptr;
+    QAction*          act_theme_         = nullptr;
+    QToolButton*      zm_in_btn_         = nullptr;
+    QToolButton*      zm_out_btn_        = nullptr;
     bool              focus_mode_        = false;
     bool              focus_prev_scenes_ = false;
     bool              focus_prev_stats_  = false;
@@ -4815,78 +5083,9 @@ int main(int argc, char* argv[]) {
     app.setOrganizationName("IndieTools");
     app.setStyle("Fusion");
 
-    // Material Design 3 Dark palette
-    QPalette pal;
-    pal.setColor(QPalette::Window,          MD3::Surface);
-    pal.setColor(QPalette::WindowText,      MD3::OnSurface);
-    pal.setColor(QPalette::Base,            QColor(0x2D, 0x2C, 0x31));
-    pal.setColor(QPalette::AlternateBase,   MD3::SurfaceVar);
-    pal.setColor(QPalette::Text,            MD3::OnSurface);
-    pal.setColor(QPalette::Button,          MD3::SurfaceVar);
-    pal.setColor(QPalette::ButtonText,      MD3::OnSurface);
-    pal.setColor(QPalette::Highlight,       MD3::PrimaryContainer);
-    pal.setColor(QPalette::HighlightedText, MD3::Primary);
-    pal.setColor(QPalette::ToolTipBase,     QColor(0x2D,0x2C,0x31));
-    pal.setColor(QPalette::ToolTipText,     MD3::OnSurface);
-    pal.setColor(QPalette::PlaceholderText, MD3::Outline);
-    app.setPalette(pal);
-
-    app.setStyleSheet(
-        // Toolbar
-        "QToolBar { background:#2D2C31; border-bottom:1px solid #49454F;"
-        "           spacing:3px; padding:4px; }"
-        "QToolBar QToolButton { color:#E6E1E5; padding:4px 8px;"
-        "           border-radius:8px; font-size:11px; font-family:'Segoe UI'; }"
-        "QToolBar QToolButton:hover { background:#4F378A; }"
-        "QToolBar QToolButton:pressed { background:#6650A4; }"
-        "QToolBar::separator { background:#49454F; width:1px; margin:4px 2px; }"
-        // Dock
-        "QDockWidget { color:#E6E1E5; font-family:'Segoe UI'; font-size:12px; }"
-        "QDockWidget::title { background:#2D2C31; padding:6px;"
-        "           border-bottom:1px solid #49454F; }"
-        // Status bar
-        "QStatusBar { background:#1C1B1F; border-top:1px solid #49454F; }"
-        // Menu bar
-        "QMenuBar { background:#2D2C31; color:#E6E1E5; border-bottom:1px solid #49454F;"
-        "           font-family:'Segoe UI'; font-size:12px; padding:2px 4px; }"
-        "QMenuBar::item { padding:4px 10px; border-radius:4px; }"
-        "QMenuBar::item:selected { background:#4F378A; }"
-        // Menus
-        "QMenu { background:#2D2C31; color:#E6E1E5; border:1px solid #49454F;"
-        "        border-radius:8px; padding:4px; }"
-        "QMenu::item { padding:6px 24px; border-radius:6px; }"
-        "QMenu::item:selected { background:#4F378A; }"
-        // Message boxes
-        "QMessageBox { background:#2D2C31; color:#E6E1E5; }"
-        // Scroll bar
-        "QScrollBar:vertical { background:#1C1B1F; width:8px; border-radius:4px; }"
-        "QScrollBar::handle:vertical { background:#49454F; border-radius:4px; }"
-        // Tool buttons (search bar, status bar zoom, dock titles)
-        "QToolButton { border:none; border-radius:6px; padding:2px; color:#E6E1E5; }"
-        "QToolButton:hover { background:#4F378A; }"
-        "QToolButton:pressed { background:#6650A4; }"
-        "QToolButton:disabled { color:#5F5B66; }"
-        // Push buttons (dialogs)
-        "QPushButton { background:#49454F; color:#E6E1E5; border:none;"
-        "              border-radius:6px; padding:6px 14px; }"
-        "QPushButton:hover { background:#4F378A; }"
-        "QPushButton:pressed { background:#6650A4; }"
-        "QPushButton:disabled { background:#2D2C31; color:#5F5B66; }"
-        // Line edits — visible focus ring (widgets with own styles override)
-        "QLineEdit { background:#2D2C31; color:#E6E1E5; border:1px solid #49454F;"
-        "            border-radius:6px; padding:3px 6px;"
-        "            selection-background-color:#4F378A; }"
-        "QLineEdit:focus { border:1px solid #D0BCFF; }"
-        // Combo boxes
-        "QComboBox { background:#2D2C31; color:#E6E1E5; border:1px solid #49454F;"
-        "            border-radius:6px; padding:3px 8px; }"
-        "QComboBox:focus { border:1px solid #D0BCFF; }"
-        // Tooltips
-        "QToolTip { background:#2D2C31; color:#E6E1E5; border:1px solid #49454F;"
-        "           padding:4px 8px; }"
-        // Menu separators
-        "QMenu::separator { height:1px; background:#49454F; margin:4px 8px; }"
-    );
+    // Theme: restore persisted choice (default dark), then style the app.
+    MD3::apply(QSettings().value("view/dark_theme", true).toBool());
+    apply_app_theme();
 
     MainWindow w;
     w.show();
