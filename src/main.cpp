@@ -85,9 +85,16 @@
 #include <stdexcept>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MD3 colour tokens — mutable so the whole app can flip dark ↔ light.
-// Every widget reads these (directly or via generated stylesheets);
-// MD3::apply() swaps the set, callers restyle afterwards.
+// Colour tokens — a flat, neutral greyscale system (Word / Pages / Final Draft
+// feel), NOT Material Design. Mutable so the whole app flips dark ↔ light;
+// every widget reads these (directly or via generated stylesheets), so the
+// palette is the single source of truth. Kept in namespace MD3 for call-site
+// compatibility — the values are pure neutral greys, no lavender/blue/warm.
+//
+// The only non-grey tokens are: Accent (a restrained neutral graphite used
+// for focus rings), and WarnAccent (a muted, desaturated red reserved for
+// genuine caution semantics — unsaved state, no matches, errors). Everything
+// else is white → grey → graphite.
 // ─────────────────────────────────────────────────────────────────────────────
 namespace MD3 {
     inline QColor Surface, SurfaceVar, OnSurface, Primary, OnPrimary,
@@ -95,72 +102,72 @@ namespace MD3 {
                   PageBg, PageBorder, PageShadow, PageText, PageTextDim,
                   Canvas,
                   Bg0,        // deepest chrome (status bar, list bg)
-                  Bg1,        // panel / popup surface
-                  Border,     // hairline borders
+                  Bg1,        // panel / popup / toolbar surface
+                  Border,     // hairline borders (primary separator)
                   Text,       // primary UI text
                   TextDim,    // secondary UI text
-                  HoverBg,    // hover fill
+                  HoverBg,    // active / checked / selected fill
                   PressedBg,  // pressed fill
-                  GoodAccent, // "saved", match count OK
-                  WarnAccent; // "unsaved", no matches
+                  GoodAccent, // "saved", match count OK (neutral grey)
+                  WarnAccent; // "unsaved", no matches (muted red)
     inline bool dark = true;
 
     inline void apply(bool dark_mode) {
         dark = dark_mode;
         if (dark) {
-            Surface          = { 0x1C, 0x1B, 0x1F };
-            SurfaceVar       = { 0x49, 0x45, 0x4F };
-            OnSurface        = { 0xE6, 0xE1, 0xE5 };
-            Primary          = { 0xD0, 0xBC, 0xFF };
-            OnPrimary        = { 0x38, 0x00, 0x6B };
-            PrimaryContainer = { 0x4F, 0x37, 0x8A };
-            Secondary        = { 0xCC, 0xC2, 0xDC };
-            Outline          = { 0x93, 0x8F, 0x99 };
-            Error            = { 0xF2, 0xB8, 0xB8 };
-            // Paper: muted lavender-grey — comfortable against dark chrome,
-            // never a stark white "flashlight" in a dim room.
-            PageBg           = { 0xD3, 0xD1, 0xD7 };
-            PageBorder       = { 0xB7, 0xB4, 0xBC };
+            // Neutral dark greys — never pure black, never blue-tinted.
+            Canvas           = { 0x1E, 0x1E, 0x1E };   // editor backdrop
+            PageBg           = { 0x2A, 0x2A, 0x2A };   // page: a touch lighter
+            PageBorder       = { 0x3C, 0x3C, 0x3C };
             PageShadow       = { 0x00, 0x00, 0x00 };
-            PageText         = { 0x2A, 0x28, 0x2D };
-            PageTextDim      = { 0x7C, 0x78, 0x81 };
-            Canvas           = { 0x1A, 0x19, 0x1D };
-            Bg0              = { 0x1C, 0x1B, 0x1F };
-            Bg1              = { 0x2D, 0x2C, 0x31 };
-            Border           = { 0x49, 0x45, 0x4F };
-            Text             = { 0xE6, 0xE1, 0xE5 };
-            TextDim          = { 0x93, 0x8F, 0x99 };
-            HoverBg          = { 0x4F, 0x37, 0x8A };
-            PressedBg        = { 0x66, 0x50, 0xA4 };
-            GoodAccent       = { 0xA8, 0xD5, 0xA2 };
-            WarnAccent       = { 0xF2, 0xB8, 0xB8 };
+            PageText         = { 0xD6, 0xD6, 0xD6 };   // light text on dark page
+            PageTextDim      = { 0x8A, 0x8A, 0x8A };
+            Bg0              = { 0x1E, 0x1E, 0x1E };
+            Bg1              = { 0x25, 0x25, 0x26 };
+            Border           = { 0x3A, 0x3A, 0x3A };
+            Text             = { 0xE0, 0xE0, 0xE0 };   // not pure white
+            TextDim          = { 0x9A, 0x9A, 0x9A };
+            HoverBg          = { 0x3A, 0x3A, 0x3A };   // active/checked
+            PressedBg        = { 0x47, 0x47, 0x47 };
+            GoodAccent       = { 0x9A, 0x9A, 0x9A };   // neutral, not green
+            WarnAccent       = { 0xC0, 0x73, 0x6A };   // muted, desaturated red
+            // Compatibility aliases (map onto the neutral scale)
+            Surface          = Bg0;
+            SurfaceVar       = HoverBg;
+            OnSurface        = Text;
+            Primary          = { 0x8A, 0x8A, 0x8A };   // focus ring / accent
+            OnPrimary        = { 0x1E, 0x1E, 0x1E };
+            PrimaryContainer = HoverBg;
+            Secondary        = TextDim;
+            Outline          = Border;
+            Error            = WarnAccent;
         } else {
-            Surface          = { 0xF5, 0xF3, 0xF7 };
-            SurfaceVar       = { 0xE0, 0xDC, 0xE5 };
-            OnSurface        = { 0x1C, 0x1B, 0x1F };
-            Primary          = { 0x67, 0x50, 0xA4 };
+            // Neutral light greys — no blue, no beige.
+            Canvas           = { 0xE8, 0xE8, 0xE8 };   // editor backdrop
+            PageBg           = { 0xFF, 0xFF, 0xFF };   // pure white page
+            PageBorder       = { 0xD9, 0xD9, 0xD9 };
+            PageShadow       = { 0x00, 0x00, 0x00 };
+            PageText         = { 0x1A, 0x1A, 0x1A };
+            PageTextDim      = { 0x8A, 0x8A, 0x8A };
+            Bg0              = { 0xF0, 0xF0, 0xF0 };
+            Bg1              = { 0xF6, 0xF6, 0xF6 };
+            Border           = { 0xDA, 0xDA, 0xDA };
+            Text             = { 0x1F, 0x1F, 0x1F };
+            TextDim          = { 0x6E, 0x6E, 0x6E };
+            HoverBg          = { 0xDD, 0xDD, 0xDD };   // active/checked
+            PressedBg        = { 0xCF, 0xCF, 0xCF };
+            GoodAccent       = { 0x5A, 0x5A, 0x5A };   // neutral, not green
+            WarnAccent       = { 0xB4, 0x43, 0x3A };   // muted, desaturated red
+            // Compatibility aliases
+            Surface          = Bg0;
+            SurfaceVar       = HoverBg;
+            OnSurface        = Text;
+            Primary          = { 0x5A, 0x5A, 0x5A };   // focus ring / accent
             OnPrimary        = { 0xFF, 0xFF, 0xFF };
-            PrimaryContainer = { 0xE9, 0xDD, 0xFF };
-            Secondary        = { 0x62, 0x5B, 0x71 };
-            Outline          = { 0x79, 0x74, 0x7E };
-            Error            = { 0xB3, 0x26, 0x1E };
-            // Paper: warm off-white — soft under diffuse light, never
-            // clinical pure white.
-            PageBg           = { 0xFA, 0xF8, 0xF4 };
-            PageBorder       = { 0xE2, 0xDF, 0xD9 };
-            PageShadow       = { 0x3A, 0x35, 0x41 };
-            PageText         = { 0x2A, 0x28, 0x2D };
-            PageTextDim      = { 0x9A, 0x95, 0x8E };
-            Canvas           = { 0xE4, 0xE1, 0xE8 };
-            Bg0              = { 0xEC, 0xE8, 0xEF };
-            Bg1              = { 0xFB, 0xF9, 0xFD };
-            Border           = { 0xCA, 0xC4, 0xD0 };
-            Text             = { 0x1C, 0x1B, 0x1F };
-            TextDim          = { 0x79, 0x74, 0x7E };
-            HoverBg          = { 0xE3, 0xD7, 0xFA };
-            PressedBg        = { 0xD0, 0xBC, 0xFF };
-            GoodAccent       = { 0x2E, 0x7D, 0x32 };
-            WarnAccent       = { 0xB3, 0x26, 0x1E };
+            PrimaryContainer = HoverBg;
+            Secondary        = TextDim;
+            Outline          = Border;
+            Error            = WarnAccent;
         }
     }
 
