@@ -709,6 +709,10 @@ public:
         relayout_timer_.setInterval(16);
         connect(&relayout_timer_, &QTimer::timeout, this, [this]{
             pages_ = engine_.layout(ctrl_.state().script);
+            if (pending_follow_cursor_) {
+                pending_follow_cursor_ = false;
+                ensure_cursor_visible();
+            }
             update_popup();   // just_accepted_ guard is inside update_popup()
             spell_timer_.start(1200);
             update();
@@ -756,7 +760,12 @@ public:
     void zoom_out()   { zoom_=std::clamp(zoom_-.1f,.3f,3.f); emit zoom_changed(zoom_); relayout_timer_.start(); }
     float zoom() const { return zoom_; }
 
-    void request_relayout() { relayout_timer_.start(); }
+    // follow_cursor: after the relayout, scroll so the caret stays in view
+    // (used by keyboard edits/navigation, never by zoom or passive refreshes).
+    void request_relayout(bool follow_cursor = false) {
+        if (follow_cursor) pending_follow_cursor_ = true;
+        relayout_timer_.start();
+    }
     const screenplay::layout::PageList& pages() const { return pages_; }
 
     void scroll_to_page(int page_num) {
@@ -958,7 +967,7 @@ protected:
                 QApplication::clipboard()->setText(
                     QString::fromStdString(ctrl_.copy_selection()));
                 ctrl_.cut_selection();
-                request_relayout(); emit script_changed();
+                request_relayout(true); emit script_changed();
             }
             return;
         }
@@ -966,7 +975,7 @@ protected:
         // Ctrl+V — paste
         if (ctrl && !shift && ev->key() == Qt::Key_V) {
             std::string txt = QApplication::clipboard()->text().toStdString();
-            if (!txt.empty()) { ctrl_.paste(txt); request_relayout(); emit script_changed(); }
+            if (!txt.empty()) { ctrl_.paste(txt); request_relayout(true); emit script_changed(); }
             return;
         }
 
@@ -1008,18 +1017,18 @@ protected:
 
         // Ctrl+Backspace / Ctrl+Delete — delete word
         if (ctrl && ev->key() == Qt::Key_Backspace) {
-            ctrl_.delete_word(-1); request_relayout(); emit script_changed(); return;
+            ctrl_.delete_word(-1); request_relayout(true); emit script_changed(); return;
         }
         if (ctrl && ev->key() == Qt::Key_Delete) {
-            ctrl_.delete_word(+1); request_relayout(); emit script_changed(); return;
+            ctrl_.delete_word(+1); request_relayout(true); emit script_changed(); return;
         }
 
         // Ctrl+Home / Ctrl+End — document start/end
         if (ctrl && ev->key() == Qt::Key_Home) {
-            ctrl_.cursor_to_start(); update(); return;
+            ctrl_.cursor_to_start(); ensure_cursor_visible(); update(); return;
         }
         if (ctrl && ev->key() == Qt::Key_End) {
-            ctrl_.cursor_to_end(); update(); return;
+            ctrl_.cursor_to_end(); ensure_cursor_visible(); update(); return;
         }
 
         // ── Autocomplete navigation & acceptance ──────────────────────────
@@ -1136,7 +1145,7 @@ protected:
         }
 
         ctrl_.handle_key(ke);
-        request_relayout();
+        request_relayout(true);
         emit script_changed();
         // Show autocomplete immediately after Enter creates a new block
         if (ke.key == screenplay::editor::Key::Enter) {
@@ -1398,6 +1407,46 @@ private:
         float total = gap + (float)pages_.size() * (ph + gap);
         if (ctrl_.state().script.title_page.enabled) total += ph + gap;
         return std::max(0.f, total - (float)height());
+    }
+
+    // ── Keep the caret line inside the viewport (Final Draft behaviour) ───
+    void ensure_cursor_visible() {
+        if (pages_.empty()) return;
+        const auto& st  = ctrl_.state();
+        const auto& geo = engine_.geometry();
+        const float dpi = (float)logicalDpiX() / 72.f;
+        const float ph  = geo.page_h * dpi * zoom_;
+        const float gap = 40.f;
+        constexpr float kMargin = 56.f;   // comfort margin above/below caret
+
+        float py = gap;   // document-space top of current page (scroll excluded)
+        if (st.script.title_page.enabled) py += ph + gap;
+
+        for (const auto& page : pages_) {
+            for (const auto& vl : page.lines) {
+                if (vl.is_more || vl.is_contd) continue;
+                if (vl.block_idx != st.cursor.block_idx) continue;
+
+                const size_t block_len =
+                    st.script.blocks[vl.block_idx].text.size();
+                const bool is_last = (vl.end_offset >= block_len);
+                const bool cursor_here =
+                    (st.cursor.byte_offset >= vl.start_offset) &&
+                    (is_last ? st.cursor.byte_offset <= vl.end_offset
+                             : st.cursor.byte_offset <  vl.end_offset);
+                if (!cursor_here) continue;
+
+                const float line_top = py + vl.y * dpi * zoom_ - scroll_y_;
+                const float line_bot = line_top + vl.height * dpi * zoom_;
+                if (line_top < kMargin)
+                    scroll_y_ = std::max(0.f, scroll_y_ + line_top - kMargin);
+                else if (line_bot > (float)height() - kMargin)
+                    scroll_y_ = std::min(max_scroll_y(),
+                        scroll_y_ + line_bot - ((float)height() - kMargin));
+                return;
+            }
+            py += ph + gap;
+        }
     }
 
     // ── Hit-test: screen pixel → document Cursor ──────────────────────────
@@ -2252,6 +2301,7 @@ private:
     bool   bold_future_scenes_ = false;
     bool   just_accepted_ = false;  // set true after accepting a suggestion;
                                     // consumed by the next update_popup() call
+    bool   pending_follow_cursor_ = false;  // scroll caret into view after relayout
     QTimer relayout_timer_, blink_timer_, autosave_timer_, spell_timer_;
 
     // Mouse drag selection
@@ -3336,8 +3386,8 @@ private:
         mFile->addAction("Export FDX\xe2\x80\xa6",      this, &MainWindow::on_export_fdx);
         // Edit
         auto* mEdit = mb->addMenu("&Edit");
-        mEdit->addAction("Undo", canvas_, [this]{ canvas_->ctrl().handle_key({screenplay::editor::Key::Undo}); canvas_->request_relayout(); emit canvas_->script_changed(); })->setShortcut(QKeySequence::Undo);
-        mEdit->addAction("Redo", canvas_, [this]{ canvas_->ctrl().handle_key({screenplay::editor::Key::Redo}); canvas_->request_relayout(); emit canvas_->script_changed(); })->setShortcut(QKeySequence("Ctrl+Shift+Z"));
+        mEdit->addAction("Undo", canvas_, [this]{ canvas_->ctrl().handle_key({screenplay::editor::Key::Undo}); canvas_->request_relayout(true); emit canvas_->script_changed(); })->setShortcut(QKeySequence::Undo);
+        mEdit->addAction("Redo", canvas_, [this]{ canvas_->ctrl().handle_key({screenplay::editor::Key::Redo}); canvas_->request_relayout(true); emit canvas_->script_changed(); })->setShortcut(QKeySequence("Ctrl+Shift+Z"));
         mEdit->addSeparator();
         mEdit->addAction("Cut", canvas_, [this]{
             if (canvas_->ctrl().state().has_selection) {
