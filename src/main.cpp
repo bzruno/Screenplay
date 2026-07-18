@@ -92,7 +92,8 @@
 namespace MD3 {
     inline QColor Surface, SurfaceVar, OnSurface, Primary, OnPrimary,
                   PrimaryContainer, Secondary, Outline, Error,
-                  PageBg, PageShadow, Canvas,
+                  PageBg, PageBorder, PageShadow, PageText, PageTextDim,
+                  Canvas,
                   Bg0,        // deepest chrome (status bar, list bg)
                   Bg1,        // panel / popup surface
                   Border,     // hairline borders
@@ -116,9 +117,14 @@ namespace MD3 {
             Secondary        = { 0xCC, 0xC2, 0xDC };
             Outline          = { 0x93, 0x8F, 0x99 };
             Error            = { 0xF2, 0xB8, 0xB8 };
-            PageBg           = { 0xFF, 0xFF, 0xFF };
+            // Paper: muted lavender-grey — comfortable against dark chrome,
+            // never a stark white "flashlight" in a dim room.
+            PageBg           = { 0xD3, 0xD1, 0xD7 };
+            PageBorder       = { 0xB7, 0xB4, 0xBC };
             PageShadow       = { 0x00, 0x00, 0x00 };
-            Canvas           = { 0x14, 0x13, 0x18 };
+            PageText         = { 0x2A, 0x28, 0x2D };
+            PageTextDim      = { 0x7C, 0x78, 0x81 };
+            Canvas           = { 0x1A, 0x19, 0x1D };
             Bg0              = { 0x1C, 0x1B, 0x1F };
             Bg1              = { 0x2D, 0x2C, 0x31 };
             Border           = { 0x49, 0x45, 0x4F };
@@ -138,8 +144,13 @@ namespace MD3 {
             Secondary        = { 0x62, 0x5B, 0x71 };
             Outline          = { 0x79, 0x74, 0x7E };
             Error            = { 0xB3, 0x26, 0x1E };
-            PageBg           = { 0xFF, 0xFF, 0xFF };
+            // Paper: warm off-white — soft under diffuse light, never
+            // clinical pure white.
+            PageBg           = { 0xFA, 0xF8, 0xF4 };
+            PageBorder       = { 0xE2, 0xDF, 0xD9 };
             PageShadow       = { 0x3A, 0x35, 0x41 };
+            PageText         = { 0x2A, 0x28, 0x2D };
+            PageTextDim      = { 0x9A, 0x95, 0x8E };
             Canvas           = { 0xE4, 0xE1, 0xE8 };
             Bg0              = { 0xEC, 0xE8, 0xEF };
             Bg1              = { 0xFB, 0xF9, 0xFD };
@@ -155,6 +166,33 @@ namespace MD3 {
 
     // Hex string for stylesheet interpolation ("#RRGGBB").
     inline QString hx(const QColor& c) { return c.name(QColor::HexRgb); }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Soft page shadow — a handful of nested rounded rects fading outward from
+// the page edge, standing in for a real gaussian blur (QPainter has none).
+// Replaces the old "stacked index cards" look (solid rects marching
+// diagonally) with a single soft, low-contrast falloff. Used for both the
+// title page and every script page.
+// ─────────────────────────────────────────────────────────────────────────────
+static void draw_page_shadow(QPainter& painter, const QRectF& page_rect,
+                             float corner_radius) {
+    constexpr int   kLayers  = 6;
+    constexpr float kSpread  = 9.f;    // total outward blur spread, in px
+    constexpr float kOffsetY = 2.f;    // shadow sits just below the page
+    constexpr int   kAlpha   = 26;     // peak alpha, right at the page edge
+
+    for (int i = kLayers; i >= 1; --i) {
+        const float t      = (float)i / kLayers;
+        const float spread = kSpread * t;
+        QColor c(MD3::PageShadow);
+        c.setAlpha(std::max(1, (int)(kAlpha * (1.f - t) * (1.f - t))));
+        QPainterPath path;
+        path.addRoundedRect(
+            page_rect.adjusted(-spread, -spread + kOffsetY, spread, spread + kOffsetY),
+            corner_radius + spread * 0.4, corner_radius + spread * 0.4);
+        painter.fillPath(path, c);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2055,14 +2093,12 @@ private:
         if (tp.enabled) {
             float tpx = cx - pw * .5f;
 
-            // Shadow
-            for (int s = 8; s >= 1; --s) {
-                QColor sc(MD3::PageShadow); sc.setAlpha(6 * s);
-                painter.fillRect(QRectF(tpx + s, py + s, pw, ph), sc);
-            }
+            draw_page_shadow(painter, QRectF(tpx, py, pw, ph), 4.f);
             QPainterPath tp_path;
             tp_path.addRoundedRect(QRectF(tpx, py, pw, ph), 4, 4);
             painter.fillPath(tp_path, MD3::PageBg);
+            painter.setPen(QPen(MD3::PageBorder, 1));
+            painter.drawPath(tp_path);
             painter.save();
             painter.setClipPath(tp_path);
 
@@ -2082,7 +2118,7 @@ private:
             body_f.setStyleHint(QFont::TypeWriter);
             apply_render_quality(body_f);
 
-            painter.setPen(QColor(0x1A, 0x1A, 0x1A));
+            painter.setPen(MD3::PageText);
 
             // Centered block at ~40% from top
             float center_y = py + ph * 0.40f;
@@ -2156,21 +2192,18 @@ private:
 
             float px = cx - pw * .5f;
 
-            // Elevation shadow (MD3 style)
-            for (int s = 8; s >= 1; --s) {
-                QColor sc(MD3::PageShadow);
-                sc.setAlpha(6 * s);
-                painter.fillRect(QRectF(px + s, py + s, pw, ph), sc);
-            }
+            draw_page_shadow(painter, QRectF(px, py, pw, ph), 4.f);
 
-            // Page surface (white)
+            // Page surface + a hairline border, barely darker than the paper
             QPainterPath page_path;
             page_path.addRoundedRect(QRectF(px, py, pw, ph), 4, 4);
             painter.fillPath(page_path, MD3::PageBg);
+            painter.setPen(QPen(MD3::PageBorder, 1));
+            painter.drawPath(page_path);
 
             // Page number — ONLY from page 2 onward, top-right
             if (page.number >= 2) {
-                painter.setPen(QColor(0x99, 0x99, 0x99));
+                painter.setPen(MD3::PageTextDim);
                 QFont pnf; pnf.setFamily(g_courier_family); pnf.setPixelSize(11);
                 apply_render_quality(pnf);
                 painter.setFont(pnf);
@@ -2204,7 +2237,7 @@ private:
                     ghost_f.setItalic(true);
                     painter.setFont(ghost_f);
                     QFontMetricsF ghost_fm(ghost_f);
-                    painter.setPen(MD3::Outline);
+                    painter.setPen(MD3::PageTextDim);
                     painter.drawText(QPointF(snap(tx), snap(ty + ghost_fm.ascent())),
                         QString::fromStdString(vl.display_text));
                     painter.setFont(tf);
@@ -2334,7 +2367,7 @@ private:
                 // ── Text ──────────────────────────────────────────────────────
                 {
                     painter.setFont(line_font);
-                    painter.setPen(QColor(0x1A, 0x1A, 0x1A));
+                    painter.setPen(MD3::PageText);
                     painter.drawText(QPointF(snap(tx), snap(ty + line_fm.ascent())),
                         QString::fromStdString(vl.display_text));
                     if (blk_ref.is_bold_ || blk_ref.is_italic_ || blk_ref.is_underline_ || bold_future_scenes_)
@@ -2349,7 +2382,7 @@ private:
                         QString sn_str = QString::number(sn) + ".";
                         painter.save();
                         painter.setFont(line_font);
-                        painter.setPen(MD3::Outline);
+                        painter.setPen(MD3::PageTextDim);
                         QFontMetricsF sn_fm(line_font);
                         if (scene_num_mode_ == SceneNumMode::Left ||
                                 scene_num_mode_ == SceneNumMode::Both) {
