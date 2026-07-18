@@ -738,6 +738,16 @@ public:
         click_timer_.setSingleShot(true);
         connect(&click_timer_, &QTimer::timeout, this, [this]{ click_count_ = 0; });
 
+        // Restore persisted view preferences.
+        {
+            QSettings qs;
+            int snm = qs.value("view/scene_numbers",
+                               (int)SceneNumMode::Both).toInt();
+            if (snm >= (int)SceneNumMode::None && snm <= (int)SceneNumMode::Both)
+                scene_num_mode_ = (SceneNumMode)snm;
+            bold_future_scenes_ = qs.value("view/bold_future_scenes", false).toBool();
+        }
+
         // Initialize spell checker with stored language preferences.
         {
             QSettings qs;
@@ -758,6 +768,11 @@ public:
     void zoom_reset() { zoom_=1.f; emit zoom_changed(zoom_); relayout_timer_.start(); }
     void zoom_in()    { zoom_=std::clamp(zoom_+.1f,.3f,3.f); emit zoom_changed(zoom_); relayout_timer_.start(); }
     void zoom_out()   { zoom_=std::clamp(zoom_-.1f,.3f,3.f); emit zoom_changed(zoom_); relayout_timer_.start(); }
+    void set_zoom(float z) {
+        zoom_ = std::clamp(z, .3f, 3.f);
+        emit zoom_changed(zoom_);
+        relayout_timer_.start();
+    }
     float zoom() const { return zoom_; }
 
     // follow_cursor: after the relayout, scroll so the caret stays in view
@@ -803,11 +818,26 @@ public:
     }
 
     enum class SceneNumMode { None, Left, Right, Both };
-    void set_scene_num_mode(SceneNumMode m) { scene_num_mode_ = m; }
+    void set_scene_num_mode(SceneNumMode m) {
+        scene_num_mode_ = m;
+        QSettings().setValue("view/scene_numbers", (int)m);
+    }
+    SceneNumMode scene_num_mode() const { return scene_num_mode_; }
     screenplay::editor::EditorController& ctrl() { return ctrl_; }
     bool spell_available() const { return spell_checker_.available(); }
 
     void show_search() { open_search(); }
+
+    // 1-based page number containing the cursor block (0 when layout empty).
+    int cursor_page() const {
+        const auto& st = ctrl_.state();
+        for (const auto& page : pages_)
+            for (const auto& vl : page.lines)
+                if (!vl.is_more && !vl.is_contd &&
+                        vl.block_idx == st.cursor.block_idx)
+                    return page.number;
+        return pages_.empty() ? 0 : 1;
+    }
 
     // Reinitialize spell checker with a new set of language tags.
     // Called when the user changes language preferences.
@@ -829,7 +859,11 @@ public:
         ctrl_.toggle_underline();
         request_relayout(); emit script_changed();
     }
-    void set_bold_future_scenes(bool v) { bold_future_scenes_ = v; }
+    void set_bold_future_scenes(bool v) {
+        bold_future_scenes_ = v;
+        QSettings().setValue("view/bold_future_scenes", v);
+    }
+    bool bold_future_scenes() const { return bold_future_scenes_; }
 
     void edit_title_page(QWidget* parent) {
         TitlePageDialog dlg(parent, ctrl_.state().script.title_page);
@@ -2898,6 +2932,9 @@ public:
         connect(canvas_, &ScreenplayCanvas::zoom_changed,
                 this,    [this](float){ update_zoom(); });
 
+        // Restore persisted zoom (saved on close, previously never re-applied)
+        canvas_->set_zoom(cfg.zoom());
+
         // Deferred post-init messages (shown after event loop starts)
         QTimer::singleShot(500, this, [this]{
             if (g_courier_prime_missing)
@@ -3457,7 +3494,7 @@ private:
             for (const auto& opt : opts) {
                 auto* a = mSN->addAction(opt.label);
                 a->setCheckable(true);
-                a->setChecked(opt.mode == SNM::Both);
+                a->setChecked(opt.mode == canvas_->scene_num_mode());
                 grp->addAction(a);
                 SNM m = opt.mode;
                 connect(a, &QAction::triggered, this, [this, m]{
@@ -3559,6 +3596,7 @@ private:
         {
             auto* a = mFmt->addAction("Bold Future Scene Headings");
             a->setCheckable(true);
+            a->setChecked(canvas_->bold_future_scenes());
             connect(a, &QAction::toggled, this, [this](bool checked){
                 canvas_->set_bold_future_scenes(checked);
                 canvas_->update();
@@ -3656,15 +3694,25 @@ private:
     }
 
     void setup_statusbar() {
+        // Current block type — left side, always visible while writing
+        blk_type_lbl_ = new QLabel;
+        blk_type_lbl_->setStyleSheet(
+            "color:#D0BCFF; font-size:11px; font-weight:bold; padding-left:6px;");
+        statusBar()->addWidget(blk_type_lbl_);
+
         word_lbl_ = new QLabel("Words: 0");
         word_lbl_->setStyleSheet("color:#A8D5A2; font-size:11px;");
         statusBar()->addPermanentWidget(word_lbl_);
+
+        scn_lbl_ = new QLabel("Scenes: 0");
+        scn_lbl_->setStyleSheet("color:#CCC2DC; font-size:11px;");
+        statusBar()->addPermanentWidget(scn_lbl_);
 
         runtime_lbl_ = new QLabel("~0min");
         runtime_lbl_->setStyleSheet("color:#CCC2DC; font-size:11px;");
         statusBar()->addPermanentWidget(runtime_lbl_);
 
-        pg_lbl_ = new QLabel("Page: 0");
+        pg_lbl_ = new QLabel("Page 0/0");
         pg_lbl_->setStyleSheet("color:#CCC2DC; font-size:11px;");
         statusBar()->addPermanentWidget(pg_lbl_);
 
@@ -3822,8 +3870,10 @@ private:
         }
 
         int pages = (int)canvas_->pages().size();
-        pg_lbl_->setText(QString("Page: %1").arg(pages));
+        pg_lbl_->setText(QString("Page %1/%2")
+                             .arg(canvas_->cursor_page()).arg(pages));
         runtime_lbl_->setText(QString("~%1min").arg(pages));
+        scn_lbl_->setText(QString("Scenes: %1").arg(n));
 
         int words = 0;
         for (const auto& b : canvas_->ctrl().state().script.blocks) {
@@ -3906,6 +3956,7 @@ private:
     QLabel*           pg_lbl_       = nullptr;
     QLabel*           word_lbl_     = nullptr;
     QLabel*           runtime_lbl_  = nullptr;
+    QLabel*           scn_lbl_      = nullptr;
     QLabel*           blk_type_lbl_ = nullptr;
     QLineEdit*        doc_name_edit_ = nullptr;
     QLabel*           capa_badge_    = nullptr;
