@@ -402,11 +402,10 @@ static void apply_app_theme() {
     pal.setColor(QPalette::Button,          MD3::SurfaceVar);
     pal.setColor(QPalette::ButtonText,      MD3::OnSurface);
     pal.setColor(QPalette::Highlight,       MD3::PrimaryContainer);
-    pal.setColor(QPalette::HighlightedText,
-                 MD3::dark ? MD3::Primary : MD3::OnSurface);
+    pal.setColor(QPalette::HighlightedText, MD3::Text);
     pal.setColor(QPalette::ToolTipBase,     MD3::Bg1);
     pal.setColor(QPalette::ToolTipText,     MD3::Text);
-    pal.setColor(QPalette::PlaceholderText, MD3::Outline);
+    pal.setColor(QPalette::PlaceholderText, MD3::TextDim);
     qApp->setPalette(pal);
 
     // Note: no QToolBar is ever instantiated (the header uses plain QWidget
@@ -421,15 +420,15 @@ static void apply_app_theme() {
         // Menu bar
         "QMenuBar { background:{bg1}; color:{text}; border-bottom:1px solid {border};"
         "           font-family:'Segoe UI'; font-size:12px; padding:3px 6px; }"
-        "QMenuBar::item { padding:6px 12px; border-radius:6px; }"
+        "QMenuBar::item { padding:6px 12px; border-radius:4px; }"
         "QMenuBar::item:selected { background:{hoverSoft}; }"
-        // Menus — soft corners, generous padding, calm selection highlight
+        // Menus — flat, light, restrained corners, comfortable padding
         "QMenu { background:{bg1}; color:{text}; border:1px solid {border};"
-        "        border-radius:10px; padding:6px; }"
-        "QMenu::item { padding:8px 28px; border-radius:6px; margin:1px 0px; }"
+        "        border-radius:6px; padding:5px; }"
+        "QMenu::item { padding:7px 28px; border-radius:4px; margin:1px 0px; }"
         "QMenu::item:selected { background:{hover}; }"
         "QMenu::item:disabled { color:{dim}; }"
-        "QMenu::separator { height:1px; background:{border}; margin:6px 10px; }"
+        "QMenu::separator { height:1px; background:{border}; margin:5px 10px; }"
         // Message boxes
         "QMessageBox { background:{bg1}; color:{text}; }"
         // Scroll bar
@@ -442,26 +441,25 @@ static void apply_app_theme() {
         // Tool buttons (search bar, status bar zoom, dock titles) — a soft,
         // neutral wash on hover; vivid Primary tint is reserved for actual
         // checked/active state (set per-button where that applies).
-        "QToolButton { border:none; border-radius:6px; padding:2px; color:{text}; }"
+        "QToolButton { border:none; border-radius:5px; padding:2px; color:{text}; }"
         "QToolButton:hover { background:{hoverSoft}; }"
         "QToolButton:pressed { background:{pressedSoft}; }"
         "QToolButton:checked { background:{hover}; }"
         "QToolButton:disabled { color:{dim}; }"
-        // Push buttons (dialogs) — deliberate actions get the clearer,
-        // vivid feedback; these appear one or two at a time, never in a row.
-        "QPushButton { background:{btn}; color:{text}; border:none;"
-        "              border-radius:6px; padding:7px 16px; }"
+        // Push buttons (dialogs) — flat, bordered, restrained corners
+        "QPushButton { background:{btn}; color:{text}; border:1px solid {border};"
+        "              border-radius:5px; padding:7px 16px; }"
         "QPushButton:hover { background:{hover}; }"
         "QPushButton:pressed { background:{pressed}; }"
         "QPushButton:disabled { background:{bg1}; color:{dim}; }"
         // Line edits — visible focus ring (widgets with own styles override)
         "QLineEdit { background:{bg1}; color:{text}; border:1px solid {border};"
-        "            border-radius:6px; padding:4px 8px;"
+        "            border-radius:5px; padding:4px 8px;"
         "            selection-background-color:{hover}; }"
         "QLineEdit:focus { border:1px solid {primary}; }"
         // Combo boxes
         "QComboBox { background:{bg1}; color:{text}; border:1px solid {border};"
-        "            border-radius:6px; padding:4px 8px; }"
+        "            border-radius:5px; padding:4px 8px; }"
         "QComboBox:focus { border:1px solid {primary}; }"
         // Tooltips
         "QToolTip { background:{bg1}; color:{text}; border:1px solid {border};"
@@ -863,7 +861,7 @@ protected:
         QColor body(MD3::Bg1); body.setAlpha(245);
         QColor head(MD3::Bg0); head.setAlpha(245);
         QPainterPath bg;
-        bg.addRoundedRect(rect(), 8, 8);
+        bg.addRoundedRect(rect(), 6, 6);
         p.fillPath(bg, body);
         p.setPen(QPen(MD3::Outline, 1));
         p.drawPath(bg);
@@ -871,7 +869,7 @@ protected:
         // ── SmartType header ──────────────────────────────────────────────
         {
             QPainterPath hdr_path;
-            hdr_path.addRoundedRect(QRectF(0, 0, width(), kHeaderH + 8), 8, 8);
+            hdr_path.addRoundedRect(QRectF(0, 0, width(), kHeaderH + 8), 6, 6);
             p.fillPath(hdr_path, head);
             p.fillRect(QRectF(0, kHeaderH / 2, width(), kHeaderH / 2 + 1),
                        head);
@@ -879,11 +877,11 @@ protected:
             QFont hf; hf.setFamily("Segoe UI"); hf.setPixelSize(9); hf.setBold(true);
             apply_render_quality(hf);
             p.setFont(hf);
-            p.setPen(MD3::Outline);
+            p.setPen(MD3::TextDim);
             p.drawText(QRect(8, 0, width() - 16, kHeaderH),
                        Qt::AlignVCenter | Qt::AlignLeft,
                        "SmartType");
-            p.setPen(QPen(MD3::Outline, 1));
+            p.setPen(QPen(MD3::Border, 1));
             p.drawLine(QPointF(0, kHeaderH), QPointF(width(), kHeaderH));
         }
 
@@ -902,7 +900,7 @@ protected:
             QRect r(0, pad_v_ + kHeaderH + row * item_h_, width(), item_h_);
             if (abs_i == sel_) {
                 QPainterPath sel_bg;
-                sel_bg.addRoundedRect(r.adjusted(3, 1, -3, -1), 5, 5);
+                sel_bg.addRoundedRect(r.adjusted(3, 1, -3, -1), 4, 4);
                 p.fillPath(sel_bg, MD3::HoverBg);   // neutral active fill
                 p.setPen(MD3::Text);
             } else {
@@ -925,7 +923,7 @@ protected:
             p.fillRect(QRectF(bar_x, list_y, 3, list_h), track);
             QPainterPath bp;
             bp.addRoundedRect(QRectF(bar_x, bar_y, 3, bar_h), 2, 2);
-            p.fillPath(bp, QColor(MD3::Outline));
+            p.fillPath(bp, MD3::TextDim);
         }
     }
 
@@ -1046,7 +1044,7 @@ public:
     // Re-apply theme-dependent bits: floating-card background + icons.
     void restyle() {
         setStyleSheet(QString(
-            "SearchBar { background:%1; border:1px solid %2; border-radius:10px; }")
+            "SearchBar { background:%1; border:1px solid %2; border-radius:6px; }")
             .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Border)));
         prev_btn_->setIcon(icons::make(icons::Id::ChevronUp));
         next_btn_->setIcon(icons::make(icons::Id::ChevronDown));
@@ -3015,11 +3013,13 @@ public:
         setStyleSheet(QString("background:transparent; color:%1; font-size:12px;")
                           .arg(MD3::hx(MD3::Text)));
         char_list_->setStyleSheet(
-            QString("QListWidget { background:%1; border-radius:8px;"
-                    "              color:%2; font-size:11px; }"
-                    "QListWidget::item:selected { background:%3; }")
+            QString("QListWidget { background:%1; border:1px solid %4;"
+                    "              border-radius:4px;"
+                    "              color:%2; font-size:11px; padding:2px; }"
+                    "QListWidget::item { padding:3px 4px; }"
+                    "QListWidget::item:selected { background:%3; border-radius:3px; }")
                 .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Text),
-                     MD3::hx(MD3::HoverBg)));
+                     MD3::hx(MD3::HoverBg), MD3::hx(MD3::Border)));
     }
 
     void refresh(const screenplay::stats::ScriptStats& s) {
@@ -3334,17 +3334,8 @@ private:
         scene_table_->setRowCount(0);
         scene_table_->setRowCount((int)index_.scenes.size());
 
-        static const QColor kColorInt(0xE8, 0xF0, 0xFF);
-        static const QColor kColorExt(0xE8, 0xFF, 0xE8);
-        static const QColor kColorIE (0xFF, 0xFB, 0xE8);
-
         for (int r = 0; r < (int)index_.scenes.size(); ++r) {
             const auto& sc = index_.scenes[(size_t)r];
-
-            QColor bg;
-            if      (sc.prefix == "INT.") bg = kColorInt;
-            else if (sc.prefix == "EXT.") bg = kColorExt;
-            else if (sc.prefix == "I/E.") bg = kColorIE;
 
             // Build characters cell (max 3 then "+ N more")
             QString chars_text;
@@ -3355,18 +3346,16 @@ private:
             }
             if (nc > 3) chars_text += QString(" +%1 more").arg(nc - 3);
 
+            // Flat greyscale: cells inherit the themed table colours; the
+            // INT./EXT. distinction lives in the PREFIX column, not in row tints.
             auto mki = [&](const QString& text, QVariant role = {}) -> QTableWidgetItem* {
                 auto* item = new QTableWidgetItem(text);
-                if (bg.isValid()) item->setBackground(bg);
-                item->setForeground(QColor(0x1C, 0x1B, 0x1F));
                 if (role.isValid()) item->setData(Qt::UserRole, role);
                 return item;
             };
             auto mkn = [&](int n, QVariant role = {}) -> QTableWidgetItem* {
                 auto* item = new QTableWidgetItem;
                 item->setData(Qt::DisplayRole, n);
-                if (bg.isValid()) item->setBackground(bg);
-                item->setForeground(QColor(0x1C, 0x1B, 0x1F));
                 if (role.isValid()) item->setData(Qt::UserRole, role);
                 return item;
             };
@@ -3632,7 +3621,7 @@ private:
         p.setRenderHint(QPainter::Antialiasing);
         QColor body(MD3::Bg1); body.setAlpha(246);
         QPainterPath bg;
-        bg.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10);
+        bg.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
         p.fillPath(bg, body);
         p.setPen(QPen(MD3::Border, 1));
         p.drawPath(bg);
@@ -4594,9 +4583,9 @@ private:
             btn->setFocusPolicy(Qt::NoFocus);    // keep keyboard focus on canvas
             // Hover is a soft neutral wash (many icons sit close together —
             // a solid tint on each would compete for attention); checked is
-            // the one state that gets the clear, vivid Primary tint.
+            // the one state that gets the clear neutral active fill.
             btn->setStyleSheet(QString(
-                "QToolButton { border:none; padding:2px; border-radius:7px; }"
+                "QToolButton { border:none; padding:2px; border-radius:5px; }"
                 "QToolButton:hover:!checked { background:%1; }"
                 "QToolButton:pressed { background:%2; }"
                 "QToolButton:checked { background:%3; }")
@@ -4972,7 +4961,8 @@ private:
             .arg(MD3::hx(MD3::Bg0), MD3::hx(MD3::Text), MD3::hx(MD3::Border)));
         scene_list_->setStyleSheet(QString(
             "QListWidget { background:%1; border:none; color:%2; font-size:11px; }"
-            "QListWidget::item:selected { background:%3; border-radius:6px; }")
+            "QListWidget::item { padding:4px 6px; }"
+            "QListWidget::item:selected { background:%3; border-radius:3px; }")
             .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Text), MD3::hx(MD3::HoverBg)));
     }
 
