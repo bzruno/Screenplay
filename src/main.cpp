@@ -192,29 +192,23 @@ namespace MD3 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Soft page shadow — a handful of nested rounded rects fading outward from
-// the page edge, standing in for a real gaussian blur (QPainter has none).
-// Replaces the old "stacked index cards" look (solid rects marching
-// diagonally) with a single soft, low-contrast falloff. Used for both the
-// title page and every script page.
+// Page separation — flat, vector look (Word / Pages). The page is a plain
+// 2D rectangle; the 1px border does the real separating. We add only a
+// whisper of a shadow (a few px, single-digit alpha, no offset) so the page
+// reads as distinct from the canvas without ever looking like it floats.
+// Deliberately no corner radius: the page is a sharp rectangle.
 // ─────────────────────────────────────────────────────────────────────────────
-static void draw_page_shadow(QPainter& painter, const QRectF& page_rect,
-                             float corner_radius) {
-    constexpr int   kLayers  = 6;
-    constexpr float kSpread  = 9.f;    // total outward blur spread, in px
-    constexpr float kOffsetY = 2.f;    // shadow sits just below the page
-    constexpr int   kAlpha   = 26;     // peak alpha, right at the page edge
+static void draw_page_shadow(QPainter& painter, const QRectF& page_rect) {
+    constexpr int   kLayers = 3;
+    constexpr float kSpread = 4.f;    // total outward spread, in px
+    constexpr int   kAlpha  = 10;     // peak alpha — barely perceptible
 
     for (int i = kLayers; i >= 1; --i) {
         const float t      = (float)i / kLayers;
         const float spread = kSpread * t;
         QColor c(MD3::PageShadow);
-        c.setAlpha(std::max(1, (int)(kAlpha * (1.f - t) * (1.f - t))));
-        QPainterPath path;
-        path.addRoundedRect(
-            page_rect.adjusted(-spread, -spread + kOffsetY, spread, spread + kOffsetY),
-            corner_radius + spread * 0.4, corner_radius + spread * 0.4);
-        painter.fillPath(path, c);
+        c.setAlpha(std::max(1, (int)(kAlpha * (1.f - t))));
+        painter.fillRect(page_rect.adjusted(-spread, -spread, spread, spread), c);
     }
 }
 
@@ -2131,14 +2125,13 @@ private:
         if (tp.enabled) {
             float tpx = cx - pw * .5f;
 
-            draw_page_shadow(painter, QRectF(tpx, py, pw, ph), 4.f);
-            QPainterPath tp_path;
-            tp_path.addRoundedRect(QRectF(tpx, py, pw, ph), 4, 4);
-            painter.fillPath(tp_path, MD3::PageBg);
+            const QRectF tp_rect(tpx, py, pw, ph);
+            draw_page_shadow(painter, tp_rect);
+            painter.fillRect(tp_rect, MD3::PageBg);
             painter.setPen(QPen(MD3::PageBorder, 1));
-            painter.drawPath(tp_path);
+            painter.drawRect(tp_rect);
             painter.save();
-            painter.setClipPath(tp_path);
+            painter.setClipRect(tp_rect);
 
             const float ml = geo.margin_left * dpi * zoom;
             const float mb = geo.margin_bot  * dpi * zoom;
@@ -2230,14 +2223,14 @@ private:
 
             float px = cx - pw * .5f;
 
-            draw_page_shadow(painter, QRectF(px, py, pw, ph), 4.f);
+            const QRectF page_rect(px, py, pw, ph);
+            draw_page_shadow(painter, page_rect);
 
-            // Page surface + a hairline border, barely darker than the paper
-            QPainterPath page_path;
-            page_path.addRoundedRect(QRectF(px, py, pw, ph), 4, 4);
-            painter.fillPath(page_path, MD3::PageBg);
+            // Flat page: solid fill + a single hairline border. No rounding,
+            // no elevation — a plain 2D plane, like a Word/Pages page.
+            painter.fillRect(page_rect, MD3::PageBg);
             painter.setPen(QPen(MD3::PageBorder, 1));
-            painter.drawPath(page_path);
+            painter.drawRect(page_rect);
 
             // Page number — ONLY from page 2 onward, top-right
             if (page.number >= 2) {
@@ -2254,7 +2247,7 @@ private:
 
             // Clip to page
             painter.save();
-            painter.setClipPath(page_path);
+            painter.setClipRect(page_rect);
 
             // Draw each visual line
             QFont tf; tf.setFamily(g_courier_family);
