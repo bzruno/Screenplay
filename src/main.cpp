@@ -673,9 +673,10 @@ public:
 
         lay->addWidget(form_box);
 
-        auto* note = new QLabel(
-            "<small style='color:#888'>All fields optional. "
-            "Do not include date, copyright or logline — not WGA standard.</small>");
+        auto* note = new QLabel(QString(
+            "<small style='color:%1'>All fields optional. "
+            "Do not include date, copyright or logline — not WGA standard.</small>")
+            .arg(MD3::hx(MD3::TextDim)));
         note->setWordWrap(true);
         lay->addWidget(note);
 
@@ -746,9 +747,10 @@ public:
         }
 
         lay->addSpacing(4);
-        auto* note = new QLabel(
-            "<small style='color:#888'>Selecione todos os idiomas usados no roteiro.<br>"
-            "A correção ortográfica só marcará palavras erradas em <b>todos</b> os idiomas selecionados.</small>");
+        auto* note = new QLabel(QString(
+            "<small style='color:%1'>Selecione todos os idiomas usados no roteiro.<br>"
+            "A correção ortográfica só marcará palavras erradas em <b>todos</b> os idiomas selecionados.</small>")
+            .arg(MD3::hx(MD3::TextDim)));
         note->setWordWrap(true);
         lay->addWidget(note);
 
@@ -938,8 +940,8 @@ protected:
             const int list_y    = kHeaderH + pad_v_;
             float bar_h  = (float)kMaxVisible / total * list_h;
             float bar_y  = list_y + (float)scroll_offset_ / total * list_h;
-            p.fillRect(QRectF(bar_x, list_y, 3, list_h),
-                       QColor(0x49, 0x45, 0x4F, 120));
+            QColor track(MD3::Border); track.setAlpha(120);
+            p.fillRect(QRectF(bar_x, list_y, 3, list_h), track);
             QPainterPath bp;
             bp.addRoundedRect(QRectF(bar_x, bar_y, 3, bar_h), 2, 2);
             p.fillPath(bp, QColor(MD3::Outline));
@@ -2513,7 +2515,8 @@ private:
                                 QString::fromStdString(vl.display_text));
                             painter.save();
                             painter.setFont(line_font);
-                            painter.setPen(QColor(0xAA, 0xAA, 0xAA, 160));
+                            QColor ghost_c(MD3::PageTextDim); ghost_c.setAlpha(180);
+                            painter.setPen(ghost_c);
                             painter.drawText(QPointF(snap(ghost_x), snap(ty + line_fm.ascent())),
                                 QString::fromStdString(ghost));
                             painter.restore();
@@ -3585,7 +3588,7 @@ using ScriptDatabase = ScriptDatabasePanel;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Toast — transient feedback pill, bottom-center of the window.
-// Fade+slide in (180ms), hold 2.4s, fade out (220ms). One at a time.
+// Fade+slide in (180ms), hold 2.4s, fade out (200ms). One at a time.
 // ─────────────────────────────────────────────────────────────────────────────
 class Toast : public QWidget {
     Q_OBJECT
@@ -3639,7 +3642,7 @@ private:
 
         QTimer::singleShot(2400, this, [this] {
             auto* out = new QPropertyAnimation(opacity_, "opacity", this);
-            out->setDuration(220);
+            out->setDuration(200);
             out->setStartValue(opacity_->opacity());
             out->setEndValue(0.0);
             connect(out, &QPropertyAnimation::finished,
@@ -4253,7 +4256,7 @@ private:
         QPixmap logo_pm(":/icons/logo.png");
         if (logo_pm.isNull()) {
             logo_pm = QPixmap(32, 32);
-            logo_pm.fill(QColor(0xD0, 0xBC, 0xFF));  // MD3 Primary as placeholder
+            logo_pm.fill(MD3::Primary);   // theme-aware placeholder
         }
         logo_lbl->setPixmap(logo_pm.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         logo_lbl->setFixedSize(32, 32);
