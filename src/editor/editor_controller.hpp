@@ -358,11 +358,51 @@ public:
 
     void paste(const std::string& utf8) {
         if (utf8.empty()) return;
+
+        // Split into paragraphs: \r stripped, blank lines collapse
+        // (screenplay blocks never contain embedded newlines).
+        std::vector<std::string> paras;
+        std::string cur;
+        for (char c : utf8) {
+            if (c == '\r') continue;
+            if (c == '\n') {
+                if (!cur.empty()) paras.push_back(std::move(cur));
+                cur.clear();
+            } else {
+                cur += c;
+            }
+        }
+        if (!cur.empty()) paras.push_back(std::move(cur));
+        if (paras.empty()) return;
+
         record_structural([&]{
             delete_selection_if_active();
-            auto& cb = current_block();
-            cb.text.insert(state_.cursor.byte_offset, utf8);
-            state_.cursor.byte_offset += utf8.size();
+            auto& blocks = state_.script.blocks;
+            auto& cb     = current_block();
+
+            if (paras.size() == 1) {
+                cb.text.insert(state_.cursor.byte_offset, paras[0]);
+                state_.cursor.byte_offset += paras[0].size();
+                return;
+            }
+
+            // Multi-paragraph: first part joins the current block, the rest
+            // become new blocks of the same type; the split-off tail of the
+            // current block is appended to the last pasted paragraph.
+            const std::string tail = cb.text.substr(state_.cursor.byte_offset);
+            cb.text = cb.text.substr(0, state_.cursor.byte_offset) + paras[0];
+
+            const auto   type = cb.type;
+            const size_t base = state_.cursor.block_idx;
+            for (size_t i = 1; i < paras.size(); ++i)
+                blocks.insert(blocks.begin() + (ptrdiff_t)(base + i),
+                    screenplay::Block{ type, paras[i],
+                                       state_.script.next_id++ });
+
+            auto& last = blocks[base + paras.size() - 1];
+            const size_t cursor_off = last.text.size();
+            last.text += tail;
+            state_.cursor = { base + paras.size() - 1, cursor_off };
         });
     }
 

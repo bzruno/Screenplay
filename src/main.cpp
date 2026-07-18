@@ -3120,6 +3120,9 @@ public:
                 QTimer::singleShot(900, this, [this]{ on_script_language(); });
             }
         }
+
+        // Crash recovery: offer to restore a leftover autosave
+        QTimer::singleShot(700, this, [this]{ maybe_recover_autosave(); });
     }
 
 private slots:
@@ -3129,6 +3132,20 @@ private slots:
         refresh_database();
         update_title();
         update_status();
+        update_save_indicator();
+    }
+
+    void update_save_indicator() {
+        if (!save_lbl_) return;
+        if (canvas_->ctrl().state().dirty) {
+            save_lbl_->setText("\xe2\x97\x8f Unsaved");
+            save_lbl_->setStyleSheet("color:#F2B8B8; font-size:11px;");
+        } else if (!last_save_time_.isEmpty()) {
+            save_lbl_->setText("Saved " + last_save_time_);
+            save_lbl_->setStyleSheet("color:#A8D5A2; font-size:11px;");
+        } else {
+            save_lbl_->clear();
+        }
     }
 
     void on_new() {
@@ -3182,15 +3199,44 @@ private slots:
         if (!p.isEmpty()) do_save(p);
     }
 
+    static QString autosave_path() {
+        return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+               + "/autosave.spl";
+    }
+
     void on_autosave() {
         if (!canvas_->ctrl().state().dirty) return;
-        QString p = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                    + "/autosave.spl";
+        QString p = autosave_path();
         QDir().mkpath(QFileInfo(p).absolutePath());
         try { screenplay::io::JsonSerializer::write(
                   canvas_->ctrl().state().script, p.toStdString());
               statusBar()->showMessage("Autosaved.", 2000);
         } catch (...) {}
+    }
+
+    // Offer to restore work left behind by a crash (autosave file present —
+    // it is deleted on every clean exit and successful manual save).
+    void maybe_recover_autosave() {
+        const QString p = autosave_path();
+        if (!QFile::exists(p)) return;
+        const auto when = QFileInfo(p).lastModified().toString("dd/MM HH:mm");
+        if (QMessageBox::question(this, "Recover unsaved work",
+                QString("Unsaved work from a previous session was found "
+                        "(autosaved %1).\nRestore it?").arg(when))
+                == QMessageBox::Yes) {
+            try {
+                canvas_->ctrl().load_script(
+                    screenplay::io::JsonDeserializer::read(p.toStdString()));
+                doc_custom_name_ = "Recovered";
+                canvas_->request_relayout();
+                emit canvas_->script_changed();
+                statusBar()->showMessage(
+                    "Recovered \xe2\x80\x94 use Save As to keep this script.", 8000);
+            } catch (const std::exception& e) {
+                QMessageBox::warning(this, "Recover", e.what());
+            }
+        }
+        QFile::remove(p);
     }
 
     void on_export_fountain() {
@@ -3923,6 +3969,10 @@ private:
             "color:#D0BCFF; font-size:11px; font-weight:bold; padding-left:6px;");
         statusBar()->addWidget(blk_type_lbl_);
 
+        save_lbl_ = new QLabel;
+        save_lbl_->setStyleSheet("color:#938F99; font-size:11px;");
+        statusBar()->addPermanentWidget(save_lbl_);
+
         word_lbl_ = new QLabel("Words: 0");
         word_lbl_->setStyleSheet("color:#A8D5A2; font-size:11px;");
         statusBar()->addPermanentWidget(word_lbl_);
@@ -4088,8 +4138,11 @@ private:
             current_path_ = path;
             screenplay::config::AppConfig::instance().add_recent_file(path);
             canvas_->ctrl().mark_clean();
+            last_save_time_ = QTime::currentTime().toString("HH:mm");
+            QFile::remove(autosave_path());   // work is safe on disk now
             statusBar()->showMessage("Saved: " + QFileInfo(path).fileName(), 3000);
             update_title();
+            update_save_indicator();
         } catch (const std::exception& e) {
             QMessageBox::critical(this, "Save error", e.what());
         }
@@ -4278,6 +4331,7 @@ private:
         cfg.save_state(saveState());
         cfg.set_zoom(canvas_->zoom());
         cfg.sync();
+        QFile::remove(autosave_path());   // clean exit — no recovery needed
         ev->accept();
     }
 
@@ -4321,6 +4375,8 @@ private:
     bool              focus_prev_scenes_ = false;
     bool              focus_prev_stats_  = false;
     bool              focus_prev_db_     = false;
+    QLabel*           save_lbl_          = nullptr;
+    QString           last_save_time_;
     QString           current_path_;
     QString           doc_custom_name_   = "Untitled";
 };
