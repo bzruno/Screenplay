@@ -166,6 +166,22 @@ namespace MD3 {
 
     // Hex string for stylesheet interpolation ("#RRGGBB").
     inline QString hx(const QColor& c) { return c.name(QColor::HexRgb); }
+
+    // "rgba(r,g,b,a)" for low-alpha overlay washes (soft hover states).
+    inline QString rgba(const QColor& c, int alpha) {
+        return QString("rgba(%1,%2,%3,%4)")
+            .arg(c.red()).arg(c.green()).arg(c.blue()).arg(alpha);
+    }
+
+    // Neutral hover wash: white-on-dark / black-on-light, low alpha.
+    // Used for plain hover so it reads as "lit up", reserving the vivid
+    // Primary-tinted HoverBg for genuinely active/checked/selected states.
+    inline QString hoverSoft() {
+        return dark ? rgba(QColor(255,255,255), 22) : rgba(QColor(0,0,0), 16);
+    }
+    inline QString pressedSoft() {
+        return dark ? rgba(QColor(255,255,255), 36) : rgba(QColor(0,0,0), 28);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -403,70 +419,75 @@ static void apply_app_theme() {
     pal.setColor(QPalette::PlaceholderText, MD3::Outline);
     qApp->setPalette(pal);
 
+    // Note: no QToolBar is ever instantiated (the header uses plain QWidget
+    // rows instead), so QToolBar rules are intentionally not styled here.
     QString ss = QString::fromUtf8(
-        // Toolbar
-        "QToolBar { background:{bg1}; border-bottom:1px solid {border};"
-        "           spacing:3px; padding:4px; }"
-        "QToolBar QToolButton { color:{text}; padding:4px 8px;"
-        "           border-radius:8px; font-size:11px; font-family:'Segoe UI'; }"
-        "QToolBar QToolButton:hover { background:{hover}; }"
-        "QToolBar QToolButton:pressed { background:{pressed}; }"
-        "QToolBar::separator { background:{border}; width:1px; margin:4px 2px; }"
         // Dock
         "QDockWidget { color:{text}; font-family:'Segoe UI'; font-size:12px; }"
-        "QDockWidget::title { background:{bg1}; padding:6px;"
+        "QDockWidget::title { background:{bg1}; padding:8px;"
         "           border-bottom:1px solid {border}; }"
         // Status bar
         "QStatusBar { background:{bg0}; border-top:1px solid {border}; }"
         // Menu bar
         "QMenuBar { background:{bg1}; color:{text}; border-bottom:1px solid {border};"
-        "           font-family:'Segoe UI'; font-size:12px; padding:2px 4px; }"
-        "QMenuBar::item { padding:4px 10px; border-radius:4px; }"
-        "QMenuBar::item:selected { background:{hover}; }"
-        // Menus
+        "           font-family:'Segoe UI'; font-size:12px; padding:3px 6px; }"
+        "QMenuBar::item { padding:6px 12px; border-radius:6px; }"
+        "QMenuBar::item:selected { background:{hoverSoft}; }"
+        // Menus — soft corners, generous padding, calm selection highlight
         "QMenu { background:{bg1}; color:{text}; border:1px solid {border};"
-        "        border-radius:8px; padding:4px; }"
-        "QMenu::item { padding:6px 24px; border-radius:6px; }"
+        "        border-radius:10px; padding:6px; }"
+        "QMenu::item { padding:8px 28px; border-radius:6px; margin:1px 0px; }"
         "QMenu::item:selected { background:{hover}; }"
-        "QMenu::separator { height:1px; background:{border}; margin:4px 8px; }"
+        "QMenu::item:disabled { color:{dim}; }"
+        "QMenu::separator { height:1px; background:{border}; margin:6px 10px; }"
         // Message boxes
         "QMessageBox { background:{bg1}; color:{text}; }"
         // Scroll bar
-        "QScrollBar:vertical { background:{bg0}; width:8px; border-radius:4px; }"
-        "QScrollBar::handle:vertical { background:{border}; border-radius:4px; }"
-        // Tool buttons (search bar, status bar zoom, dock titles)
+        "QScrollBar:vertical { background:transparent; width:10px; margin:2px; }"
+        "QScrollBar::handle:vertical { background:{border}; border-radius:4px;"
+        "                              min-height:28px; }"
+        "QScrollBar::handle:vertical:hover { background:{dim}; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }"
+        // Tool buttons (search bar, status bar zoom, dock titles) — a soft,
+        // neutral wash on hover; vivid Primary tint is reserved for actual
+        // checked/active state (set per-button where that applies).
         "QToolButton { border:none; border-radius:6px; padding:2px; color:{text}; }"
-        "QToolButton:hover { background:{hover}; }"
-        "QToolButton:pressed { background:{pressed}; }"
+        "QToolButton:hover { background:{hoverSoft}; }"
+        "QToolButton:pressed { background:{pressedSoft}; }"
+        "QToolButton:checked { background:{hover}; }"
         "QToolButton:disabled { color:{dim}; }"
-        // Push buttons (dialogs)
+        // Push buttons (dialogs) — deliberate actions get the clearer,
+        // vivid feedback; these appear one or two at a time, never in a row.
         "QPushButton { background:{btn}; color:{text}; border:none;"
-        "              border-radius:6px; padding:6px 14px; }"
+        "              border-radius:6px; padding:7px 16px; }"
         "QPushButton:hover { background:{hover}; }"
         "QPushButton:pressed { background:{pressed}; }"
         "QPushButton:disabled { background:{bg1}; color:{dim}; }"
         // Line edits — visible focus ring (widgets with own styles override)
         "QLineEdit { background:{bg1}; color:{text}; border:1px solid {border};"
-        "            border-radius:6px; padding:3px 6px;"
+        "            border-radius:6px; padding:4px 8px;"
         "            selection-background-color:{hover}; }"
         "QLineEdit:focus { border:1px solid {primary}; }"
         // Combo boxes
         "QComboBox { background:{bg1}; color:{text}; border:1px solid {border};"
-        "            border-radius:6px; padding:3px 8px; }"
+        "            border-radius:6px; padding:4px 8px; }"
         "QComboBox:focus { border:1px solid {primary}; }"
         // Tooltips
         "QToolTip { background:{bg1}; color:{text}; border:1px solid {border};"
-        "           padding:4px 8px; }");
+        "           border-radius:4px; padding:5px 9px; }");
 
-    ss.replace("{bg0}",     MD3::hx(MD3::Bg0));
-    ss.replace("{bg1}",     MD3::hx(MD3::Bg1));
-    ss.replace("{border}",  MD3::hx(MD3::Border));
-    ss.replace("{text}",    MD3::hx(MD3::Text));
-    ss.replace("{dim}",     MD3::hx(MD3::TextDim));
-    ss.replace("{hover}",   MD3::hx(MD3::HoverBg));
-    ss.replace("{pressed}", MD3::hx(MD3::PressedBg));
-    ss.replace("{primary}", MD3::hx(MD3::Primary));
-    ss.replace("{btn}",     MD3::hx(MD3::SurfaceVar));
+    ss.replace("{bg0}",        MD3::hx(MD3::Bg0));
+    ss.replace("{bg1}",        MD3::hx(MD3::Bg1));
+    ss.replace("{border}",     MD3::hx(MD3::Border));
+    ss.replace("{text}",       MD3::hx(MD3::Text));
+    ss.replace("{dim}",        MD3::hx(MD3::TextDim));
+    ss.replace("{hover}",      MD3::hx(MD3::HoverBg));
+    ss.replace("{hoverSoft}",  MD3::hoverSoft());
+    ss.replace("{pressed}",    MD3::hx(MD3::PressedBg));
+    ss.replace("{pressedSoft}",MD3::pressedSoft());
+    ss.replace("{primary}",    MD3::hx(MD3::Primary));
+    ss.replace("{btn}",        MD3::hx(MD3::SurfaceVar));
     qApp->setStyleSheet(ss);
 }
 
@@ -960,11 +981,14 @@ class SearchBar : public QWidget {
     Q_OBJECT
 public:
     explicit SearchBar(QWidget* parent = nullptr) : QWidget(parent) {
-        setAutoFillBackground(true);
+        // Rounded floating card, matching the SmartType popup and toasts —
+        // WA_StyledBackground is required for a plain QWidget to honour a
+        // stylesheet background/border-radius (otherwise it's ignored).
+        setAttribute(Qt::WA_StyledBackground, true);
         setFixedHeight(36);
 
         auto* lay = new QHBoxLayout(this);
-        lay->setContentsMargins(8, 4, 8, 4);
+        lay->setContentsMargins(10, 4, 10, 4);
         lay->setSpacing(4);
 
         edit_ = new QLineEdit;
@@ -1016,6 +1040,8 @@ public:
         connect(next_btn,  &QToolButton::clicked,    this, &SearchBar::next_requested);
         connect(prev_btn,  &QToolButton::clicked,    this, &SearchBar::prev_requested);
         connect(cls_btn,   &QToolButton::clicked,    this, &SearchBar::close_requested);
+
+        restyle();
     }
 
     QLineEdit* edit() const { return edit_; }
@@ -1035,8 +1061,11 @@ public:
         }
     }
 
-    // Re-apply theme-dependent bits (button icons pick up the new accent).
+    // Re-apply theme-dependent bits: floating-card background + icons.
     void restyle() {
+        setStyleSheet(QString(
+            "SearchBar { background:%1; border:1px solid %2; border-radius:10px; }")
+            .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Border)));
         prev_btn_->setIcon(icons::make(icons::Id::ChevronUp));
         next_btn_->setIcon(icons::make(icons::Id::ChevronDown));
         cls_btn_ ->setIcon(icons::make(icons::Id::Close));
@@ -4216,8 +4245,8 @@ private:
         row1->setStyleSheet(QString("background:%1; border-bottom:1px solid %2;")
                                 .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Border)));
         auto* row1_lay = new QHBoxLayout(row1);
-        row1_lay->setContentsMargins(8, 4, 8, 4);
-        row1_lay->setSpacing(6);
+        row1_lay->setContentsMargins(12, 4, 12, 4);
+        row1_lay->setSpacing(8);
 
         // App logo (32x32 placeholder if resource missing)
         auto* logo_lbl = new QLabel;
@@ -4571,32 +4600,35 @@ private:
         // All 3 rows live inside the header widget via setMenuWidget().
         // ═══════════════════════════════════════════════════════════════════
         auto* row3 = new QWidget;
-        row3->setFixedHeight(30);
+        row3->setFixedHeight(36);
         row3->setStyleSheet(QString("background:%1; border-bottom:1px solid %2;")
                                 .arg(MD3::hx(MD3::Bg1), MD3::hx(MD3::Border)));
         auto* row3_lay = new QHBoxLayout(row3);
-        row3_lay->setContentsMargins(6, 0, 6, 0);
-        row3_lay->setSpacing(2);
+        row3_lay->setContentsMargins(10, 4, 10, 4);
+        row3_lay->setSpacing(4);
 
         auto add_tool = [&](QAction* act) {
             auto* btn = new QToolButton;
             btn->setDefaultAction(act);          // icon, tooltip, checked state
-            btn->setFixedSize(26, 26);
+            btn->setFixedSize(28, 28);
             btn->setIconSize(QSize(18, 18));
             btn->setFocusPolicy(Qt::NoFocus);    // keep keyboard focus on canvas
+            // Hover is a soft neutral wash (many icons sit close together —
+            // a solid tint on each would compete for attention); checked is
+            // the one state that gets the clear, vivid Primary tint.
             btn->setStyleSheet(QString(
-                "QToolButton { border:none; padding:2px; border-radius:6px; }"
-                "QToolButton:hover { background:%1; }"
+                "QToolButton { border:none; padding:2px; border-radius:7px; }"
+                "QToolButton:hover:!checked { background:%1; }"
                 "QToolButton:pressed { background:%2; }"
-                "QToolButton:checked { background:%1; }")
-                .arg(MD3::hx(MD3::HoverBg), MD3::hx(MD3::PressedBg)));
+                "QToolButton:checked { background:%3; }")
+                .arg(MD3::hoverSoft(), MD3::pressedSoft(), MD3::hx(MD3::HoverBg)));
             row3_lay->addWidget(btn);
         };
         auto add_sep = [&] {
             auto* sep = new QFrame;
             sep->setFrameShape(QFrame::VLine);
             sep->setStyleSheet("color:" + MD3::hx(MD3::Border) + ";");
-            sep->setFixedHeight(18);
+            sep->setFixedHeight(20);
             row3_lay->addWidget(sep);
         };
 
