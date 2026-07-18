@@ -4403,13 +4403,20 @@ private:
     }
 
     void refresh_scenes() {
-        scene_list_->clear();
+        // Rebuild the list widget only when scene titles actually changed —
+        // this runs on every keystroke and item churn was the costly part.
+        QStringList titles;
         int n = 0;
         for (const auto& b : canvas_->ctrl().state().script.blocks)
             if (b.type == screenplay::BlockType::SceneHeading)
-                scene_list_->addItem(
-                    QString("%1. %2").arg(++n).arg(QString::fromStdString(b.text)));
-        apply_scene_filter();
+                titles << QString("%1. %2").arg(++n)
+                              .arg(QString::fromStdString(b.text));
+        if (titles != scene_titles_cache_) {
+            scene_titles_cache_ = titles;
+            scene_list_->clear();
+            scene_list_->addItems(titles);
+            apply_scene_filter();
+        }
 
         // Auto-scroll scene panel to the scene containing the cursor
         {
@@ -4508,6 +4515,7 @@ private:
     ScreenplayCanvas* canvas_      = nullptr;
     QListWidget*      scene_list_  = nullptr;
     QLineEdit*        scene_filter_edit_ = nullptr;
+    QStringList       scene_titles_cache_;
     StatsPanel*       stats_panel_ = nullptr;
     QDockWidget*      stats_dock_  = nullptr;
     QDockWidget*      scene_dock_  = nullptr;
