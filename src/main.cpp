@@ -892,6 +892,7 @@ public:
         relayout_timer_.setInterval(16);
         connect(&relayout_timer_, &QTimer::timeout, this, [this]{
             pages_ = engine_.layout(ctrl_.state().script);
+            recompute_char_highlight();   // block indices may have shifted
             if (pending_follow_cursor_) {
                 pending_follow_cursor_ = false;
                 ensure_cursor_visible();
@@ -1012,6 +1013,17 @@ public:
     bool spell_available() const { return spell_checker_.available(); }
 
     void show_search() { open_search(); }
+
+    // ── Character dialogue highlight ──────────────────────────────────────
+    // Toggle: highlighting the already-active character clears it.
+    void set_character_highlight(const std::string& raw_name) {
+        const std::string norm = QString::fromStdString(raw_name)
+                                     .trimmed().toUpper().toStdString();
+        highlight_character_ = (norm == highlight_character_) ? "" : norm;
+        recompute_char_highlight();
+        update();
+    }
+    const std::string& highlighted_character() const { return highlight_character_; }
 
     // 1-based page number containing the cursor block (0 when layout empty).
     int cursor_page() const {
@@ -1360,7 +1372,12 @@ protected:
             case Qt::Key_Home:      ke.key = K::Home;      break;
             case Qt::Key_End:       ke.key = K::End;       break;
             case Qt::Key_Escape:
-                // Escape with no popup: normal editor escape
+                // Escape with no popup: clear character highlight first,
+                // then fall back to the normal editor escape
+                if (!highlight_character_.empty()) {
+                    set_character_highlight(highlight_character_); // toggle off
+                    return;
+                }
                 ke.key = K::Escape;
                 break;
             default:
@@ -1635,6 +1652,39 @@ private:
         float total = gap + (float)pages_.size() * (ph + gap);
         if (ctrl_.state().script.title_page.enabled) total += ph + gap;
         return std::max(0.f, total - (float)height());
+    }
+
+    // Mark every Character block matching highlight_character_ plus the
+    // Parenthetical/Dialogue chain that follows it. O(blocks), run per relayout.
+    void recompute_char_highlight() {
+        char_highlight_blocks_.clear();
+        if (highlight_character_.empty()) return;
+        const auto& blocks = ctrl_.state().script.blocks;
+        char_highlight_blocks_.assign(blocks.size(), 0);
+        using BT = screenplay::BlockType;
+        bool in_chain = false;
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            switch (blocks[i].type) {
+            case BT::Character: {
+                std::string raw = blocks[i].text;
+                auto paren = raw.find(" (");     // strip "(CONT'D)" etc.
+                if (paren != std::string::npos) raw = raw.substr(0, paren);
+                const std::string norm = QString::fromStdString(raw)
+                                             .trimmed().toUpper().toStdString();
+                in_chain = (norm == highlight_character_);
+                if (in_chain) char_highlight_blocks_[i] = 1;
+                break;
+            }
+            case BT::Parenthetical:
+            case BT::Dialogue:
+            case BT::DualDialogue:
+                if (in_chain) char_highlight_blocks_[i] = 1;
+                break;
+            default:
+                in_chain = false;
+                break;
+            }
+        }
     }
 
     // ── Keep the caret line inside the viewport (Final Draft behaviour) ───
@@ -1967,6 +2017,16 @@ private:
                     painter.fillRect(
                         QRectF(px, ty - 2, 3, bh),
                         QColor(bc.red(), bc.green(), bc.blue(), 200));
+                }
+
+                // ── Character dialogue highlight (behind text) ───────────────
+                if (vl.block_idx < char_highlight_blocks_.size() &&
+                        char_highlight_blocks_[vl.block_idx]) {
+                    const QColor hc = block_color(screenplay::BlockType::Character);
+                    const float hw = (float)line_fm.horizontalAdvance(
+                        QString::fromStdString(vl.display_text));
+                    painter.fillRect(QRectF(tx - 5, ty, hw + 10, lh_px),
+                                     QColor(hc.red(), hc.green(), hc.blue(), 42));
                 }
 
                 // ── Search highlights (drawn BEHIND text) ─────────────────────
@@ -2493,6 +2553,10 @@ private:
     screenplay::spellcheck::SpellChecker  spell_checker_;
     std::vector<SpellBlockCache>          spell_cache_;
 
+    // Character highlight (click a character in Stats/Database panels)
+    std::string       highlight_character_;      // normalized uppercase
+    std::vector<char> char_highlight_blocks_;    // 1 = block is highlighted
+
     float  zoom_         = 1.f;
     float  scroll_y_     = 0.f;
     bool   blink_on_     = true;
@@ -2670,8 +2734,14 @@ public:
         char_list_->setStyleSheet(
             "QListWidget { background:#2D2C31; border-radius:8px; color:#E6E1E5; font-size:11px; }");
         char_list_->setMaximumHeight(160);
+        char_list_->setToolTip("Click a character to highlight their dialogue");
         lay->addWidget(char_list_);
         lay->addStretch();
+
+        connect(char_list_, &QListWidget::itemClicked, this,
+                [this](QListWidgetItem* item) {
+            emit character_clicked(item->data(Qt::UserRole).toString());
+        });
     }
 
     void refresh(const screenplay::stats::ScriptStats& s) {
@@ -2681,11 +2751,18 @@ public:
         lbl_time_  ->setText(QString("Time: ~%1 min").arg((int)s.screen_time_min));
         char_list_->clear();
         for (const auto& [name, cnt] :
-             screenplay::stats::StatsEngine::top_characters(s))
-            char_list_->addItem(
+             screenplay::stats::StatsEngine::top_characters(s)) {
+            auto* item = new QListWidgetItem(
                 QString("%1  (%2 lines)").arg(
                     QString::fromStdString(name)).arg(cnt));
+            item->setData(Qt::UserRole, QString::fromStdString(name));
+            char_list_->addItem(item);
+        }
     }
+
+signals:
+    void character_clicked(const QString& name);
+
 private:
     QLabel* lbl_pages_=nullptr, *lbl_scenes_=nullptr,
            *lbl_words_=nullptr, *lbl_time_=nullptr;
@@ -2822,6 +2899,13 @@ public:
         connect(char_combo_,  QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this](int){ apply_filter(); });
 
+        // Single click on a character row: highlight their dialogue
+        connect(char_table_, &QTableWidget::cellClicked, this,
+                [this](int row, int) {
+            auto* name_item = char_table_->item(row, 0);
+            if (name_item) emit highlight_character(name_item->text());
+        });
+
         // Double-click: navigate to block
         connect(scene_table_, &QTableWidget::cellDoubleClicked, this,
                 [this](int row, int) {
@@ -2904,6 +2988,7 @@ public:
 
 signals:
     void navigate_to_block(size_t block_idx);
+    void highlight_character(const QString& name);
 
 private:
     // Populate filter combo boxes from the current index
@@ -4347,8 +4432,21 @@ private:
         });
     }
 
+    // Shared by the Stats and Database panels.
+    void on_character_highlight(const QString& name) {
+        canvas_->set_character_highlight(name.toStdString());
+        if (!canvas_->highlighted_character().empty())
+            statusBar()->showMessage(
+                QString("Highlighting %1 \xe2\x80\x94 click again or press Esc to clear")
+                    .arg(name), 5000);
+        else
+            statusBar()->clearMessage();
+    }
+
     void setup_stats_dock() {
         stats_panel_ = new StatsPanel;
+        connect(stats_panel_, &StatsPanel::character_clicked,
+                this, &MainWindow::on_character_highlight);
         stats_dock_  = new QDockWidget("Statistics", this);
         stats_dock_->setWidget(stats_panel_);
         stats_dock_->setAllowedAreas(Qt::RightDockWidgetArea|Qt::LeftDockWidgetArea);
@@ -4370,6 +4468,8 @@ private:
             if (act_view_database_) act_view_database_->setChecked(v);
         });
 
+        connect(db_panel_, &ScriptDatabase::highlight_character,
+                this, &MainWindow::on_character_highlight);
         connect(db_panel_, &ScriptDatabase::navigate_to_block, this,
                 [this](size_t block_idx) {
             canvas_->ctrl().set_cursor_pos({ block_idx, 0 });
