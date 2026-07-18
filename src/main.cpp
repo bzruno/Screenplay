@@ -1201,7 +1201,7 @@ public:
                                (int)SceneNumMode::Both).toInt();
             if (snm >= (int)SceneNumMode::None && snm <= (int)SceneNumMode::Both)
                 scene_num_mode_ = (SceneNumMode)snm;
-            bold_future_scenes_ = qs.value("view/bold_future_scenes", false).toBool();
+            bold_scene_headings_ = qs.value("view/bold_scene_headings", false).toBool();
         }
 
         // Initialize spell checker with stored language preferences.
@@ -1342,11 +1342,12 @@ public:
         ctrl_.toggle_underline();
         request_relayout(); emit script_changed();
     }
-    void set_bold_future_scenes(bool v) {
-        bold_future_scenes_ = v;
-        QSettings().setValue("view/bold_future_scenes", v);
+    void set_bold_scene_headings(bool v) {
+        bold_scene_headings_ = v;
+        QSettings().setValue("view/bold_scene_headings", v);
+        request_relayout();
     }
-    bool bold_future_scenes() const { return bold_future_scenes_; }
+    bool bold_scene_headings() const { return bold_scene_headings_; }
 
     void edit_title_page(QWidget* parent) {
         TitlePageDialog dlg(parent, ctrl_.state().script.title_page);
@@ -2295,8 +2296,8 @@ private:
                 const auto& blk_ref = st.script.blocks[vl.block_idx];
                 QFont line_font = tf;
                 bool eff_bold = blk_ref.is_bold_;
-                if (bold_future_scenes_ && blk_ref.type == screenplay::BlockType::SceneHeading
-                        && vl.block_idx > st.cursor.block_idx)
+                if (bold_scene_headings_
+                        && blk_ref.type == screenplay::BlockType::SceneHeading)
                     eff_bold = true;
                 line_font.setBold(eff_bold);
                 line_font.setItalic(blk_ref.is_italic_);
@@ -2415,7 +2416,7 @@ private:
                     painter.setPen(MD3::PageText);
                     painter.drawText(QPointF(snap(tx), snap(ty + line_fm.ascent())),
                         QString::fromStdString(vl.display_text));
-                    if (blk_ref.is_bold_ || blk_ref.is_italic_ || blk_ref.is_underline_ || bold_future_scenes_)
+                    if (eff_bold || blk_ref.is_italic_ || blk_ref.is_underline_)
                         painter.setFont(tf);  // restore base font
                 }
 
@@ -2869,7 +2870,7 @@ private:
     float  scroll_y_     = 0.f;
     bool   blink_on_     = true;
     SceneNumMode scene_num_mode_ = SceneNumMode::Both;
-    bool   bold_future_scenes_ = false;
+    bool   bold_scene_headings_ = false;
     bool   just_accepted_ = false;  // set true after accepting a suggestion;
                                     // consumed by the next update_popup() call
     bool   pending_follow_cursor_ = false;  // scroll caret into view after relayout
@@ -4555,12 +4556,12 @@ private:
         }
         mFmt->addSeparator();
         {
-            auto* a = mFmt->addAction("Bold Future Scene Headings");
+            auto* a = mFmt->addAction("Bold Scene Headings");
             a->setCheckable(true);
-            a->setChecked(canvas_->bold_future_scenes());
+            a->setChecked(canvas_->bold_scene_headings());
+            a->setToolTip("Show every scene heading in bold");
             connect(a, &QAction::toggled, this, [this](bool checked){
-                canvas_->set_bold_future_scenes(checked);
-                canvas_->update();
+                canvas_->set_bold_scene_headings(checked);
             });
         }
 
