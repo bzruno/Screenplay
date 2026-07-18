@@ -127,6 +127,121 @@ static const char* block_label(screenplay::BlockType t) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Lucide-style line icons, drawn with QPainter (no QtSvg dependency).
+// All icons share the 24x24 grid, 2px stroke, round caps/joins.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace icons {
+
+enum class Id { New, Open, Save, Pdf, Print, Undo, Redo, Search,
+                Scenes, Characters, Stats, Focus };
+
+inline QIcon make(Id id, const QColor& color = QColor(0xCC, 0xC2, 0xDC)) {
+    constexpr int S = 24, dpr = 2;              // 2x raster for HiDPI
+    QPixmap pm(S * dpr, S * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    QPen pen(color, 2.0);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+
+    QPainterPath path;
+    auto file_outline = [&] {                    // shared by New / Pdf
+        path.moveTo(13, 3); path.lineTo(7, 3);
+        path.quadTo(6, 3, 6, 4);   path.lineTo(6, 20);
+        path.quadTo(6, 21, 7, 21); path.lineTo(17, 21);
+        path.quadTo(18, 21, 18, 20); path.lineTo(18, 8);
+        path.lineTo(13, 3);
+        path.moveTo(13, 3); path.lineTo(13, 8); path.lineTo(18, 8);
+    };
+
+    switch (id) {
+    case Id::New:
+        file_outline();
+        path.moveTo(9, 15);  path.lineTo(15, 15);
+        path.moveTo(12, 12); path.lineTo(12, 18);
+        break;
+    case Id::Open:
+        path.moveTo(3, 18); path.lineTo(3, 5);
+        path.quadTo(3, 4, 4, 4);   path.lineTo(9, 4);
+        path.lineTo(11, 6);        path.lineTo(20, 6);
+        path.quadTo(21, 6, 21, 7); path.lineTo(21, 18);
+        path.quadTo(21, 19, 20, 19); path.lineTo(4, 19);
+        path.quadTo(3, 19, 3, 18);
+        break;
+    case Id::Save:
+        path.addRoundedRect(QRectF(4, 4, 16, 16), 2, 2);
+        path.moveTo(8, 4);  path.lineTo(8, 9);
+        path.lineTo(15, 9); path.lineTo(15, 4);
+        path.moveTo(7, 20); path.lineTo(7, 13);
+        path.lineTo(17, 13); path.lineTo(17, 20);
+        break;
+    case Id::Pdf:
+        file_outline();
+        path.moveTo(12, 11); path.lineTo(12, 18);
+        path.moveTo(9, 15);  path.lineTo(12, 18); path.lineTo(15, 15);
+        break;
+    case Id::Print:
+        path.moveTo(7, 8);  path.lineTo(7, 3);
+        path.lineTo(17, 3); path.lineTo(17, 8);
+        path.addRoundedRect(QRectF(4, 8, 16, 8), 1.5, 1.5);
+        path.addRect(QRectF(7, 13, 10, 8));
+        break;
+    case Id::Undo:
+        path.moveTo(9, 14); path.lineTo(4, 9); path.lineTo(9, 4);
+        path.moveTo(4, 9);  path.lineTo(14.5, 9);
+        path.arcTo(QRectF(9, 9, 11, 11), 90, -180);
+        path.lineTo(11, 20);
+        break;
+    case Id::Redo:
+        path.moveTo(15, 14); path.lineTo(20, 9); path.lineTo(15, 4);
+        path.moveTo(20, 9);  path.lineTo(9.5, 9);
+        path.arcTo(QRectF(4, 9, 11, 11), 90, 180);
+        path.lineTo(13, 20);
+        break;
+    case Id::Search:
+        path.addEllipse(QPointF(10.5, 10.5), 6, 6);
+        path.moveTo(15, 15); path.lineTo(20, 20);
+        break;
+    case Id::Scenes:
+        for (int y : {6, 12, 18}) {
+            path.addEllipse(QPointF(5, y), 0.8, 0.8);
+            path.moveTo(9, y); path.lineTo(20, y);
+        }
+        break;
+    case Id::Characters:
+        path.addEllipse(QPointF(9, 7), 3.2, 3.2);
+        path.moveTo(3, 20);  path.quadTo(3, 14, 9, 14);
+        path.quadTo(15, 14, 15, 20);
+        path.addEllipse(QPointF(17.5, 8), 2.4, 2.4);
+        path.moveTo(21, 20); path.quadTo(21, 15, 16.5, 14.5);
+        break;
+    case Id::Stats:
+        path.moveTo(3, 3);  path.lineTo(3, 19);
+        path.quadTo(3, 21, 5, 21); path.lineTo(21, 21);
+        path.moveTo(8, 17);  path.lineTo(8, 13);
+        path.moveTo(13, 17); path.lineTo(13, 5);
+        path.moveTo(18, 17); path.lineTo(18, 9);
+        break;
+    case Id::Focus:
+        path.addEllipse(QPointF(12, 12), 3, 3);
+        path.moveTo(3, 7);  path.lineTo(3, 5);  path.quadTo(3, 3, 5, 3);   path.lineTo(7, 3);
+        path.moveTo(17, 3); path.lineTo(19, 3); path.quadTo(21, 3, 21, 5); path.lineTo(21, 7);
+        path.moveTo(21, 17); path.lineTo(21, 19); path.quadTo(21, 21, 19, 21); path.lineTo(17, 21);
+        path.moveTo(7, 21); path.lineTo(5, 21); path.quadTo(3, 21, 3, 19); path.lineTo(3, 17);
+        break;
+    }
+    p.drawPath(path);
+    return QIcon(pm);
+}
+
+} // namespace icons
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Font resolver + quality helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3668,27 +3783,48 @@ private:
 
         // File
         auto* mFile = mb->addMenu("&File");
-        mFile->addAction("New",         this, &MainWindow::on_new)->setShortcut(QKeySequence::New);
-        mFile->addAction("Open\xe2\x80\xa6",  this, &MainWindow::on_open)->setShortcut(QKeySequence::Open);
+        auto* act_new = mFile->addAction("New", this, &MainWindow::on_new);
+        act_new->setShortcut(QKeySequence::New);
+        act_new->setIcon(icons::make(icons::Id::New));
+        act_new->setToolTip("New script (Ctrl+N)");
+        auto* act_open = mFile->addAction("Open\xe2\x80\xa6", this, &MainWindow::on_open);
+        act_open->setShortcut(QKeySequence::Open);
+        act_open->setIcon(icons::make(icons::Id::Open));
+        act_open->setToolTip("Open script (Ctrl+O)");
         {
             recent_menu_ = mFile->addMenu("Open Recent");
             connect(recent_menu_, &QMenu::aboutToShow,
                     this, &MainWindow::populate_recent_menu);
             populate_recent_menu();   // set initial enabled state
         }
-        mFile->addAction("Save",        this, &MainWindow::on_save)->setShortcut(QKeySequence::Save);
+        auto* act_save = mFile->addAction("Save", this, &MainWindow::on_save);
+        act_save->setShortcut(QKeySequence::Save);
+        act_save->setIcon(icons::make(icons::Id::Save));
+        act_save->setToolTip("Save (Ctrl+S)");
         mFile->addAction("Save As\xe2\x80\xa6", this, &MainWindow::on_save_as)->setShortcut(QKeySequence("Ctrl+Shift+S"));
         mFile->addSeparator();
-        mFile->addAction("Export PDF\xe2\x80\xa6",      this, &MainWindow::on_export_pdf);
+        auto* act_pdf = mFile->addAction("Export PDF\xe2\x80\xa6",
+                                         this, &MainWindow::on_export_pdf);
+        act_pdf->setIcon(icons::make(icons::Id::Pdf));
+        act_pdf->setToolTip("Export PDF (WGA layout)");
         mFile->addAction("Export Fountain\xe2\x80\xa6", this, &MainWindow::on_export_fountain);
         mFile->addAction("Export FDX\xe2\x80\xa6",      this, &MainWindow::on_export_fdx);
         mFile->addSeparator();
-        mFile->addAction("Print\xe2\x80\xa6",           this, &MainWindow::on_print)
-            ->setShortcut(QKeySequence::Print);
+        auto* act_print = mFile->addAction("Print\xe2\x80\xa6",
+                                           this, &MainWindow::on_print);
+        act_print->setShortcut(QKeySequence::Print);
+        act_print->setIcon(icons::make(icons::Id::Print));
+        act_print->setToolTip("Print (Ctrl+P)");
         // Edit
         auto* mEdit = mb->addMenu("&Edit");
-        mEdit->addAction("Undo", canvas_, [this]{ canvas_->ctrl().handle_key({screenplay::editor::Key::Undo}); canvas_->request_relayout(true); emit canvas_->script_changed(); })->setShortcut(QKeySequence::Undo);
-        mEdit->addAction("Redo", canvas_, [this]{ canvas_->ctrl().handle_key({screenplay::editor::Key::Redo}); canvas_->request_relayout(true); emit canvas_->script_changed(); })->setShortcut(QKeySequence("Ctrl+Shift+Z"));
+        auto* act_undo = mEdit->addAction("Undo", canvas_, [this]{ canvas_->ctrl().handle_key({screenplay::editor::Key::Undo}); canvas_->request_relayout(true); emit canvas_->script_changed(); });
+        act_undo->setShortcut(QKeySequence::Undo);
+        act_undo->setIcon(icons::make(icons::Id::Undo));
+        act_undo->setToolTip("Undo (Ctrl+Z)");
+        auto* act_redo = mEdit->addAction("Redo", canvas_, [this]{ canvas_->ctrl().handle_key({screenplay::editor::Key::Redo}); canvas_->request_relayout(true); emit canvas_->script_changed(); });
+        act_redo->setShortcut(QKeySequence("Ctrl+Shift+Z"));
+        act_redo->setIcon(icons::make(icons::Id::Redo));
+        act_redo->setToolTip("Redo (Ctrl+Shift+Z)");
         mEdit->addSeparator();
         mEdit->addAction("Cut", canvas_, [this]{
             if (canvas_->ctrl().state().has_selection) {
@@ -3706,7 +3842,11 @@ private:
             if (!txt.empty()) { canvas_->ctrl().paste(txt); canvas_->request_relayout(); emit canvas_->script_changed(); }
         })->setShortcut(QKeySequence::Paste);
         mEdit->addSeparator();
-        mEdit->addAction("Find\xe2\x80\xa6",    this, [this]{ canvas_->show_search(); })->setShortcut(QKeySequence::Find);
+        auto* act_find = mEdit->addAction("Find\xe2\x80\xa6",
+                                          this, [this]{ canvas_->show_search(); });
+        act_find->setShortcut(QKeySequence::Find);
+        act_find->setIcon(icons::make(icons::Id::Search));
+        act_find->setToolTip("Find (Ctrl+F)");
         mEdit->addAction("Replace\xe2\x80\xa6", this, &MainWindow::on_find_replace)->setShortcut(QKeySequence("Ctrl+H"));
         mEdit->addSeparator();
         {
@@ -3776,6 +3916,8 @@ private:
             act_view_scenes_ = mView->addAction("Scenes");
             act_view_scenes_->setCheckable(true);
             act_view_scenes_->setChecked(false);
+            act_view_scenes_->setIcon(icons::make(icons::Id::Scenes));
+            act_view_scenes_->setToolTip("Scenes panel");
             connect(act_view_scenes_, &QAction::triggered, this, [this](bool checked){
                 scene_dock_->setVisible(checked);
             });
@@ -3785,6 +3927,8 @@ private:
             act_view_stats_->setCheckable(true);
             act_view_stats_->setChecked(false);
             act_view_stats_->setShortcut(QKeySequence("Ctrl+Shift+I"));
+            act_view_stats_->setIcon(icons::make(icons::Id::Stats));
+            act_view_stats_->setToolTip("Statistics (Ctrl+Shift+I)");
             connect(act_view_stats_, &QAction::triggered, this, [this](bool checked){
                 stats_dock_->setVisible(checked);
                 if (checked) refresh_stats();
@@ -3795,6 +3939,8 @@ private:
             act_view_database_->setCheckable(true);
             act_view_database_->setChecked(false);
             act_view_database_->setShortcut(QKeySequence("Ctrl+Shift+B"));
+            act_view_database_->setIcon(icons::make(icons::Id::Characters));
+            act_view_database_->setToolTip("Script Database \xe2\x80\x94 scenes, characters, dialogue (Ctrl+Shift+B)");
             connect(act_view_database_, &QAction::triggered, this, [this](bool checked){
                 db_dock_->setVisible(checked);
                 if (checked) refresh_database();
@@ -3806,8 +3952,9 @@ private:
             act_focus_mode_->setCheckable(true);
             act_focus_mode_->setChecked(focus_mode_);
             act_focus_mode_->setShortcut(QKeySequence("Ctrl+Shift+F"));
+            act_focus_mode_->setIcon(icons::make(icons::Id::Focus));
             act_focus_mode_->setToolTip(
-                "Hide all panels and bars \xe2\x80\x94 just you and the page");
+                "Focus mode \xe2\x80\x94 just you and the page (Ctrl+Shift+F)");
             connect(act_focus_mode_, &QAction::triggered,
                     this, &MainWindow::set_focus_mode);
         }
@@ -3915,47 +4062,57 @@ private:
         });
 
         // ═══════════════════════════════════════════════════════════════════
-        // ROW 3 — Icon toolbar (flat, 28px, 10 placeholder slots)
+        // ROW 3 — Icon toolbar (flat, quick access to the everyday actions)
         // All 3 rows live inside the header widget via setMenuWidget().
         // ═══════════════════════════════════════════════════════════════════
         auto* row3 = new QWidget;
-        row3->setFixedHeight(28);
+        row3->setFixedHeight(30);
         row3->setStyleSheet(
             "background:#2D2C31; border-bottom:1px solid #49454F;");
         auto* row3_lay = new QHBoxLayout(row3);
-        row3_lay->setContentsMargins(4, 0, 4, 0);
+        row3_lay->setContentsMargins(6, 0, 6, 0);
         row3_lay->setSpacing(2);
 
-        // Slots 1-5 (left group)
-        for (int i = 0; i < 5; ++i) {
+        auto add_tool = [&](QAction* act) {
             auto* btn = new QToolButton;
-            btn->setText("");
-            btn->setIcon(QIcon());
-            btn->setFixedSize(24, 24);
+            btn->setDefaultAction(act);          // icon, tooltip, checked state
+            btn->setFixedSize(26, 26);
+            btn->setIconSize(QSize(18, 18));
+            btn->setFocusPolicy(Qt::NoFocus);    // keep keyboard focus on canvas
             btn->setStyleSheet(
-                "QToolButton { border:none; padding:2px; border-radius:4px; }"
-                "QToolButton:hover { background:#4F378A; }");
-            btn->setEnabled(false);
-            btn->setToolTip("Reserved \xe2\x80\x94 under development");
+                "QToolButton { border:none; padding:2px; border-radius:6px; }"
+                "QToolButton:hover { background:#4F378A; }"
+                "QToolButton:pressed { background:#6650A4; }"
+                "QToolButton:checked { background:#4F378A; }");
             row3_lay->addWidget(btn);
-        }
+        };
+        auto add_sep = [&] {
+            auto* sep = new QFrame;
+            sep->setFrameShape(QFrame::VLine);
+            sep->setStyleSheet("color:#49454F;");
+            sep->setFixedHeight(18);
+            row3_lay->addWidget(sep);
+        };
 
-        // Spacer between slot 5 and 6
+        add_tool(act_new);
+        add_tool(act_open);
+        add_tool(act_save);
+        add_sep();
+        add_tool(act_pdf);
+        add_tool(act_print);
+        add_sep();
+        add_tool(act_undo);
+        add_tool(act_redo);
+
         row3_lay->addStretch();
 
-        // Slots 6-10 (right group)
-        for (int i = 0; i < 5; ++i) {
-            auto* btn = new QToolButton;
-            btn->setText("");
-            btn->setIcon(QIcon());
-            btn->setFixedSize(24, 24);
-            btn->setStyleSheet(
-                "QToolButton { border:none; padding:2px; border-radius:4px; }"
-                "QToolButton:hover { background:#4F378A; }");
-            btn->setEnabled(false);
-            btn->setToolTip("Reserved \xe2\x80\x94 under development");
-            row3_lay->addWidget(btn);
-        }
+        add_tool(act_find);
+        add_sep();
+        add_tool(act_view_scenes_);
+        add_tool(act_view_database_);
+        add_tool(act_view_stats_);
+        add_sep();
+        add_tool(act_focus_mode_);
 
         header_vbox->addWidget(row3);   // Row 3 added THIRD → below menu bar
 
