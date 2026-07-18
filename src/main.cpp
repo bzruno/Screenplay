@@ -782,6 +782,8 @@ public:
         relayout_timer_.start();
     }
     const screenplay::layout::PageList& pages() const { return pages_; }
+    const screenplay::layout::PageGeometry& page_geometry() const { return engine_.geometry(); }
+    float pt_size() const { return engine_.pt_size(); }
 
     void scroll_to_page(int page_num) {
         if (pages_.empty()) return;
@@ -2345,6 +2347,140 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WGA-accurate print/PDF rendering — reuses the editor's PageList layout,
+// so exported pages match the screen exactly (breaks, MORE/CONT'D, margins).
+// ─────────────────────────────────────────────────────────────────────────────
+static void render_script_to_printer(
+    QPrinter&                                printer,
+    const screenplay::Script&                script,
+    const screenplay::layout::PageList&      pages,
+    const screenplay::layout::PageGeometry&  geo,
+    float                                    pt_size,
+    ScreenplayCanvas::SceneNumMode           num_mode)
+{
+    QPainter painter(&printer);
+    if (!painter.isActive())
+        throw std::runtime_error("Cannot open printer / PDF output.");
+
+    // Uniform scale: layout points (1/72 in) → printer device pixels.
+    const QRectF dev = printer.pageRect(QPrinter::DevicePixel);
+    const qreal  s   = dev.width() / geo.page_w;
+    painter.scale(s, s);
+
+    QFont base(g_courier_family);
+    base.setPixelSize(qRound(pt_size));   // 1 px == 1 pt in scaled space
+    base.setStyleHint(QFont::TypeWriter);
+    apply_render_quality(base);
+    painter.setPen(Qt::black);
+
+    bool first_sheet = true;
+    auto next_sheet = [&] {
+        if (!first_sheet) printer.newPage();
+        first_sheet = false;
+    };
+
+    // ── Title page ────────────────────────────────────────────────────────
+    const auto& tp = script.title_page;
+    if (tp.enabled) {
+        next_sheet();
+        QFont title_f = base;
+        title_f.setPixelSize(qRound(pt_size * 1.25f));
+        title_f.setBold(true);
+        QFontMetricsF tfm_t(title_f);
+        QFontMetricsF tfm_b(base);
+
+        float y = geo.page_h * 0.40f;
+        painter.setFont(title_f);
+        {
+            QString q = QString::fromStdString(tp.title);
+            painter.drawText(
+                QPointF((geo.page_w - tfm_t.horizontalAdvance(q)) / 2.0,
+                        y + tfm_t.ascent()), q);
+        }
+        painter.setFont(base);
+        const float lh = (float)tfm_b.height() * 1.5f;
+        float row_y = y + (float)tfm_t.height() + lh * 1.5f;
+        auto draw_centered = [&](const QString& q) {
+            painter.drawText(
+                QPointF((geo.page_w - tfm_b.horizontalAdvance(q)) / 2.0,
+                        row_y + tfm_b.ascent()), q);
+            row_y += lh;
+        };
+        draw_centered(QString::fromStdString(
+            tp.credit_type.empty() ? "Written by" : tp.credit_type));
+        for (const auto& author : tp.authors)
+            draw_centered(QString::fromStdString(author));
+        if (!tp.contact_left.empty())
+            painter.drawText(
+                QPointF(geo.margin_left,
+                        geo.page_h - geo.margin_bot - tfm_b.height()
+                            + tfm_b.ascent()),
+                QString::fromStdString(tp.contact_left));
+    }
+
+    // Scene numbers (block_idx → 1-based) when enabled
+    std::vector<int> scene_num_by_block;
+    if (num_mode != ScreenplayCanvas::SceneNumMode::None) {
+        scene_num_by_block.resize(script.blocks.size(), 0);
+        int sn = 0;
+        for (size_t bi = 0; bi < script.blocks.size(); ++bi)
+            if (script.blocks[bi].type == screenplay::BlockType::SceneHeading)
+                scene_num_by_block[bi] = ++sn;
+    }
+
+    // ── Script pages ──────────────────────────────────────────────────────
+    for (const auto& page : pages) {
+        next_sheet();
+
+        if (page.number >= 2) {
+            painter.setFont(base);
+            QFontMetricsF fm(base);
+            QString pnum = QString::number(page.number) + ".";
+            painter.drawText(
+                QPointF(geo.page_w - geo.margin_right
+                            - fm.horizontalAdvance(pnum),
+                        geo.margin_top * 0.55f + fm.ascent()), pnum);
+        }
+
+        for (const auto& vl : page.lines) {
+            QFont line_font = base;
+            if (vl.is_more || vl.is_contd) {
+                line_font.setItalic(true);
+            } else {
+                const auto& blk = script.blocks[vl.block_idx];
+                line_font.setBold(blk.is_bold_);
+                line_font.setItalic(blk.is_italic_);
+                line_font.setUnderline(blk.is_underline_);
+            }
+            painter.setFont(line_font);
+            QFontMetricsF fm(line_font);
+            painter.drawText(QPointF(vl.x, vl.y + fm.ascent()),
+                             QString::fromStdString(vl.display_text));
+
+            // Scene numbers in the margins, mirroring the on-screen modes
+            if (!vl.is_more && !vl.is_contd && !scene_num_by_block.empty()
+                    && vl.line_in_block == 0
+                    && script.blocks[vl.block_idx].type
+                           == screenplay::BlockType::SceneHeading) {
+                int sn = scene_num_by_block[vl.block_idx];
+                if (sn > 0) {
+                    QString sn_str = QString::number(sn) + ".";
+                    using SNM = ScreenplayCanvas::SceneNumMode;
+                    if (num_mode == SNM::Left || num_mode == SNM::Both)
+                        painter.drawText(
+                            QPointF(geo.margin_left - 36.f, vl.y + fm.ascent()),
+                            sn_str);
+                    if (num_mode == SNM::Right || num_mode == SNM::Both)
+                        painter.drawText(
+                            QPointF(geo.page_w - geo.margin_right + 4.f,
+                                    vl.y + fm.ascent()), sn_str);
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Stats panel
 // ─────────────────────────────────────────────────────────────────────────────
 class StatsPanel : public QWidget {
@@ -3050,18 +3186,41 @@ private slots:
     void on_zoom_out()   { canvas_->zoom_out();   update_zoom(); }
     void on_zoom_reset() { canvas_->zoom_reset(); update_zoom(); }
 
+    void on_export_pdf() {
+        auto p = QFileDialog::getSaveFileName(
+            this, "Export PDF", {}, "PDF (*.pdf)");
+        if (p.isEmpty()) return;
+        try {
+            QPrinter printer(QPrinter::HighResolution);
+            printer.setOutputFormat(QPrinter::PdfFormat);
+            printer.setOutputFileName(p);
+            printer.setPageSize(QPageSize(QPageSize::A4));
+            printer.setPageMargins(QMarginsF(0, 0, 0, 0));
+            render_script_to_printer(
+                printer, canvas_->ctrl().state().script, canvas_->pages(),
+                canvas_->page_geometry(), canvas_->pt_size(),
+                canvas_->scene_num_mode());
+            statusBar()->showMessage(
+                "PDF exported: " + QFileInfo(p).fileName(), 3000);
+        } catch (const std::exception& e) {
+            QMessageBox::critical(this, "Export error", e.what());
+        }
+    }
+
     void on_print() {
         QPrinter printer(QPrinter::HighResolution);
+        printer.setPageSize(QPageSize(QPageSize::A4));
+        printer.setPageMargins(QMarginsF(0, 0, 0, 0));
         QPrintDialog dlg(&printer, this);
         if (dlg.exec() != QDialog::Accepted) return;
-        QTextDocument doc;
-        QString text;
-        for (const auto& b : canvas_->ctrl().state().script.blocks) {
-            if (!text.isEmpty()) text += "\n";
-            text += QString::fromStdString(b.text);
+        try {
+            render_script_to_printer(
+                printer, canvas_->ctrl().state().script, canvas_->pages(),
+                canvas_->page_geometry(), canvas_->pt_size(),
+                canvas_->scene_num_mode());
+        } catch (const std::exception& e) {
+            QMessageBox::critical(this, "Print error", e.what());
         }
-        doc.setPlainText(text);
-        doc.print(&printer);
     }
 
     void on_find_replace() {
@@ -3198,7 +3357,7 @@ private slots:
             {"Ctrl+O",          "Open document",               "Global"},
             {"Ctrl+S",          "Save",                        "Global"},
             {"Ctrl+Shift+S",    "Save as",                     "Global"},
-            {"Ctrl+P",          "Export PDF",                  "Global"},
+            {"Ctrl+P",          "Print (WGA layout)",          "Global"},
             // Edit
             {"Ctrl+Z",          "Undo",                        "Global"},
             {"Ctrl+Shift+Z",    "Redo",                        "Global"},
@@ -3417,9 +3576,12 @@ private:
         mFile->addAction("Save",        this, &MainWindow::on_save)->setShortcut(QKeySequence::Save);
         mFile->addAction("Save As\xe2\x80\xa6", this, &MainWindow::on_save_as)->setShortcut(QKeySequence("Ctrl+Shift+S"));
         mFile->addSeparator();
-        mFile->addAction("Export PDF\xe2\x80\xa6",      this, &MainWindow::on_print);
+        mFile->addAction("Export PDF\xe2\x80\xa6",      this, &MainWindow::on_export_pdf);
         mFile->addAction("Export Fountain\xe2\x80\xa6", this, &MainWindow::on_export_fountain);
         mFile->addAction("Export FDX\xe2\x80\xa6",      this, &MainWindow::on_export_fdx);
+        mFile->addSeparator();
+        mFile->addAction("Print\xe2\x80\xa6",           this, &MainWindow::on_print)
+            ->setShortcut(QKeySequence::Print);
         // Edit
         auto* mEdit = mb->addMenu("&Edit");
         mEdit->addAction("Undo", canvas_, [this]{ canvas_->ctrl().handle_key({screenplay::editor::Key::Undo}); canvas_->request_relayout(true); emit canvas_->script_changed(); })->setShortcut(QKeySequence::Undo);
@@ -3811,8 +3973,7 @@ private:
         };
         // Ctrl+= is an alternate zoom-in (menu uses Ctrl++, a different key sequence)
         sc("Ctrl+=", [this]{ on_zoom_in(); });
-        // Ctrl+P for print/export PDF — menu action has no shortcut set
-        sc("Ctrl+P", [this]{ on_print(); });
+        // Ctrl+P now belongs to the File > Print… menu action.
         // All other shortcuts (Ctrl+S, F11, Ctrl+N, Ctrl+O, Ctrl+H, etc.)
         // are handled exclusively by their menu action setShortcut() calls.
         // Duplicate QShortcuts were removed to eliminate Qt ambiguous-shortcut
