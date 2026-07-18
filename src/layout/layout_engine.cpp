@@ -147,10 +147,6 @@ PageList LayoutEngine::layout(const screenplay::Script& script) const {
                 script.blocks[bi + 1].type == screenplay::BlockType::Parenthetical ||
                 script.blocks[bi + 1].type == screenplay::BlockType::DualDialogue);
 
-        float space_needed = fmt.space_before * spacing_factor_
-                             + lh * static_cast<float>(wrapped.size())
-                             + fmt.space_after * spacing_factor_;
-
         if (keep_with_next && bi + 1 < script.blocks.size()) {
             // Require space for Character + first line of Dialogue on same page
             size_t next_lines = block_line_count(bi + 1);

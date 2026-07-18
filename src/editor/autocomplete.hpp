@@ -207,7 +207,7 @@ public:
     // Build full suggestion string to insert
     // Given the current text and a chosen suggestion,
     // return the COMPLETE heading text (not just the suffix)
-    static std::string build_completion(const std::string& current,
+    static std::string build_completion(const std::string& /*current*/,
                                         const std::string& suggestion,
                                         const std::string& text_up)
     {

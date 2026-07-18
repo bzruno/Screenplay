@@ -133,7 +133,8 @@ static const char* block_label(screenplay::BlockType t) {
 namespace icons {
 
 enum class Id { New, Open, Save, Pdf, Print, Undo, Redo, Search,
-                Scenes, Characters, Stats, Focus };
+                Scenes, Characters, Stats, Focus,
+                ChevronUp, ChevronDown, Close, ZoomIn, ZoomOut };
 
 inline QIcon make(Id id, const QColor& color = QColor(0xCC, 0xC2, 0xDC)) {
     constexpr int S = 24, dpr = 2;              // 2x raster for HiDPI
@@ -233,6 +234,27 @@ inline QIcon make(Id id, const QColor& color = QColor(0xCC, 0xC2, 0xDC)) {
         path.moveTo(17, 3); path.lineTo(19, 3); path.quadTo(21, 3, 21, 5); path.lineTo(21, 7);
         path.moveTo(21, 17); path.lineTo(21, 19); path.quadTo(21, 21, 19, 21); path.lineTo(17, 21);
         path.moveTo(7, 21); path.lineTo(5, 21); path.quadTo(3, 21, 3, 19); path.lineTo(3, 17);
+        break;
+    case Id::ChevronUp:
+        path.moveTo(6, 15); path.lineTo(12, 9); path.lineTo(18, 15);
+        break;
+    case Id::ChevronDown:
+        path.moveTo(6, 9); path.lineTo(12, 15); path.lineTo(18, 9);
+        break;
+    case Id::Close:
+        path.moveTo(6, 6);  path.lineTo(18, 18);
+        path.moveTo(18, 6); path.lineTo(6, 18);
+        break;
+    case Id::ZoomIn:
+        path.addEllipse(QPointF(10.5, 10.5), 6, 6);
+        path.moveTo(15, 15); path.lineTo(20, 20);
+        path.moveTo(8, 10.5);  path.lineTo(13, 10.5);
+        path.moveTo(10.5, 8);  path.lineTo(10.5, 13);
+        break;
+    case Id::ZoomOut:
+        path.addEllipse(QPointF(10.5, 10.5), 6, 6);
+        path.moveTo(15, 15); path.lineTo(20, 20);
+        path.moveTo(8, 10.5); path.lineTo(13, 10.5);
         break;
     }
     p.drawPath(path);
@@ -746,12 +768,19 @@ public:
         match_lbl_->setAlignment(Qt::AlignCenter);
         lay->addWidget(match_lbl_);
 
-        auto* prev_btn = new QToolButton; prev_btn->setText("▲"); prev_btn->setFixedWidth(26);
-        auto* next_btn = new QToolButton; next_btn->setText("▼"); next_btn->setFixedWidth(26);
-        auto* cls_btn  = new QToolButton; cls_btn ->setText("✕"); cls_btn ->setFixedWidth(26);
-        lay->addWidget(prev_btn);
-        lay->addWidget(next_btn);
-        lay->addWidget(cls_btn);
+        auto mk_btn = [&](icons::Id id, const char* tip) {
+            auto* b = new QToolButton;
+            b->setIcon(icons::make(id));
+            b->setIconSize(QSize(14, 14));
+            b->setFixedSize(26, 26);
+            b->setToolTip(tip);
+            b->setFocusPolicy(Qt::NoFocus);   // keep focus in the edit
+            lay->addWidget(b);
+            return b;
+        };
+        auto* prev_btn = mk_btn(icons::Id::ChevronUp,   "Previous match (Shift+Enter)");
+        auto* next_btn = mk_btn(icons::Id::ChevronDown, "Next match (Enter)");
+        auto* cls_btn  = mk_btn(icons::Id::Close,       "Close search (Esc)");
 
         adjustSize();
 
@@ -1025,7 +1054,6 @@ protected:
         painter.fillRect(rect(), MD3::Canvas);
 
         const float dpi = (float)logicalDpiX() / 72.f;
-        QtRenderTarget target(&painter, dpi);
 
         const auto& st = ctrl_.state();
         screenplay::render::RenderConfig cfg;
@@ -2367,16 +2395,6 @@ private:
         return QWidget::eventFilter(obj, ev);
     }
 
-    // ── Font metrics helper ────────────────────────────────────────────────
-    // Returns QFontMetricsF for the given block, applying bold/italic to base.
-    static QFontMetricsF metrics_for(const screenplay::Block& blk, const QFont& base) {
-        if (!blk.is_bold_ && !blk.is_italic_) return QFontMetricsF(base);
-        QFont f = base;
-        f.setBold(blk.is_bold_);
-        f.setItalic(blk.is_italic_);
-        return QFontMetricsF(f);
-    }
-
     // ── Spell check ────────────────────────────────────────────────────────
 
     void update_spell_check() {
@@ -2407,49 +2425,6 @@ private:
         // Shrink if blocks were deleted
         if (spell_cache_.size() > blocks.size())
             spell_cache_.resize(blocks.size());
-    }
-
-    void show_spell_menu(QPoint global_pos, size_t block_idx,
-                         const screenplay::spellcheck::Misspelling& ms) {
-        QMenu menu(this);
-
-        if (ms.suggestions.empty()) {
-            menu.addAction("(No suggestions)")->setEnabled(false);
-        } else {
-            for (const auto& sug : ms.suggestions) {
-                QString qs = QString::fromStdString(sug);
-                auto* act  = menu.addAction(qs);
-                connect(act, &QAction::triggered, this,
-                    [this, block_idx, ms, sug] {
-                        auto& text = ctrl_.script_mut().blocks[block_idx].text;
-                        if (ms.start + ms.length <= text.size()) {
-                            text.replace(ms.start, ms.length, sug);
-                            // Invalidate cache for this block so it re-checks
-                            if (block_idx < spell_cache_.size())
-                                spell_cache_[block_idx].text_snapshot.clear();
-                            request_relayout();
-                            emit script_changed();
-                        }
-                    });
-            }
-        }
-
-        menu.addSeparator();
-        {
-            const auto& blktext = ctrl_.state().script.blocks[block_idx].text;
-            std::string word = (ms.start + ms.length <= blktext.size())
-                ? blktext.substr(ms.start, ms.length) : std::string{};
-            auto* act = menu.addAction("Add to dictionary");
-            connect(act, &QAction::triggered, this, [this, word] {
-                if (!word.empty()) {
-                    spell_checker_.add_to_dictionary(word);
-                    spell_cache_.clear();   // force full re-check
-                    request_relayout();
-                }
-            });
-        }
-
-        menu.exec(global_pos);
     }
 
     std::unique_ptr<screenplay::layout::FreeTypeMetrics> metrics_ =
@@ -3506,9 +3481,6 @@ private slots:
         if (act_focus_mode_) act_focus_mode_->setChecked(on);
         canvas_->setFocus();
     }
-    void on_stats()      { stats_dock_->setVisible(!stats_dock_->isVisible()); }
-    void on_database()   { db_dock_->setVisible(!db_dock_->isVisible()); if (db_dock_->isVisible()) refresh_database(); }
-
     void on_script_language() {
         QSettings qs;
         QStringList curr = qs.value("spell_languages", QStringList{"en-US"}).toStringList();
@@ -3636,6 +3608,7 @@ private slots:
             {"Ctrl+Scroll",     "Zoom with mouse",             "Editor"},
             // View
             {"F11",             "Full screen",                 "Global"},
+            {"Ctrl+Shift+F",    "Focus mode",                  "Global"},
             {"Ctrl+Shift+I",    "Statistics",                  "Global"},
             {"Ctrl+Shift+B",    "Script Database",             "Global"},
             // Format
@@ -3746,6 +3719,8 @@ private:
             "            font-family:'Segoe UI'; padding:2px 4px; }");
         doc_name_edit_->setMinimumWidth(160);
         doc_name_edit_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        doc_name_edit_->setToolTip(
+            "Document name \xe2\x80\x94 click to rename (renames the file when saved)");
         row1_lay->addWidget(doc_name_edit_);
         connect(doc_name_edit_, &QLineEdit::editingFinished, this, [this]{
             QString new_name = doc_name_edit_->text().trimmed();
@@ -4148,8 +4123,11 @@ private:
 
         // Zoom controls on the right of the status bar
         auto* zm_out = new QToolButton;
-        zm_out->setText("−");
-        zm_out->setStyleSheet("color:#E6E1E5; font-size:12px;");
+        zm_out->setIcon(icons::make(icons::Id::ZoomOut));
+        zm_out->setIconSize(QSize(14, 14));
+        zm_out->setFixedSize(22, 22);
+        zm_out->setToolTip("Zoom out (Ctrl+-)");
+        zm_out->setFocusPolicy(Qt::NoFocus);
         connect(zm_out, &QToolButton::clicked, this, &MainWindow::on_zoom_out);
         statusBar()->addPermanentWidget(zm_out);
 
@@ -4157,11 +4135,15 @@ private:
         zoom_lbl_->setFixedWidth(44);
         zoom_lbl_->setAlignment(Qt::AlignCenter);
         zoom_lbl_->setStyleSheet("color:#E6E1E5; font-size:11px;");
+        zoom_lbl_->setToolTip("Zoom (Ctrl+scroll on the page)");
         statusBar()->addPermanentWidget(zoom_lbl_);
 
         auto* zm_in = new QToolButton;
-        zm_in->setText("+");
-        zm_in->setStyleSheet("color:#E6E1E5; font-size:12px;");
+        zm_in->setIcon(icons::make(icons::Id::ZoomIn));
+        zm_in->setIconSize(QSize(14, 14));
+        zm_in->setFixedSize(22, 22);
+        zm_in->setToolTip("Zoom in (Ctrl++)");
+        zm_in->setFocusPolicy(Qt::NoFocus);
         connect(zm_in, &QToolButton::clicked, this, &MainWindow::on_zoom_in);
         statusBar()->addPermanentWidget(zm_in);
     }
@@ -4507,9 +4489,9 @@ private:
     }
 
     void update_capa_badge() {
-        bool enabled = canvas_->ctrl().state().script.title_page.enabled;
-        if (capa_badge_) capa_badge_->setVisible(enabled);
-        if (capa_toggle_act_) capa_toggle_act_->setChecked(enabled);
+        if (capa_toggle_act_)
+            capa_toggle_act_->setChecked(
+                canvas_->ctrl().state().script.title_page.enabled);
     }
 
     ScreenplayCanvas* canvas_      = nullptr;
@@ -4529,7 +4511,6 @@ private:
     QLabel*           blk_type_lbl_ = nullptr;
     QLineEdit*        doc_name_edit_ = nullptr;
     QMenu*            recent_menu_   = nullptr;
-    QLabel*           capa_badge_    = nullptr;
     QAction*          capa_toggle_act_   = nullptr;
     QAction*          spell_status_act_  = nullptr;
     QAction*          act_view_scenes_   = nullptr;
@@ -4613,6 +4594,31 @@ int main(int argc, char* argv[]) {
         // Scroll bar
         "QScrollBar:vertical { background:#1C1B1F; width:8px; border-radius:4px; }"
         "QScrollBar::handle:vertical { background:#49454F; border-radius:4px; }"
+        // Tool buttons (search bar, status bar zoom, dock titles)
+        "QToolButton { border:none; border-radius:6px; padding:2px; color:#E6E1E5; }"
+        "QToolButton:hover { background:#4F378A; }"
+        "QToolButton:pressed { background:#6650A4; }"
+        "QToolButton:disabled { color:#5F5B66; }"
+        // Push buttons (dialogs)
+        "QPushButton { background:#49454F; color:#E6E1E5; border:none;"
+        "              border-radius:6px; padding:6px 14px; }"
+        "QPushButton:hover { background:#4F378A; }"
+        "QPushButton:pressed { background:#6650A4; }"
+        "QPushButton:disabled { background:#2D2C31; color:#5F5B66; }"
+        // Line edits — visible focus ring (widgets with own styles override)
+        "QLineEdit { background:#2D2C31; color:#E6E1E5; border:1px solid #49454F;"
+        "            border-radius:6px; padding:3px 6px;"
+        "            selection-background-color:#4F378A; }"
+        "QLineEdit:focus { border:1px solid #D0BCFF; }"
+        // Combo boxes
+        "QComboBox { background:#2D2C31; color:#E6E1E5; border:1px solid #49454F;"
+        "            border-radius:6px; padding:3px 8px; }"
+        "QComboBox:focus { border:1px solid #D0BCFF; }"
+        // Tooltips
+        "QToolTip { background:#2D2C31; color:#E6E1E5; border:1px solid #49454F;"
+        "           padding:4px 8px; }"
+        // Menu separators
+        "QMenu::separator { height:1px; background:#49454F; margin:4px 8px; }"
     );
 
     MainWindow w;

@@ -61,7 +61,7 @@ float FreeTypeMetrics::line_height(float pt_size) const {
 
 std::vector<size_t> FreeTypeMetrics::word_wrap(
     std::string_view text,
-    float pt_size,
+    float /*pt_size*/,       // advances are resolution-independent here
     float max_width) const
 {
     std::vector<size_t> breaks;
