@@ -2680,6 +2680,16 @@ private:
                 float ty = py + vl.y * dpi * zoom;
                 float lh_px = vl.height * dpi * zoom;
 
+                // The popup opens just below the caret line. If that point is
+                // scrolled above the canvas top (into the toolbar/header band)
+                // or below the canvas bottom, the caret is out of view — hide
+                // the popup rather than draw it over the toolbar.
+                const float popup_top = ty + lh_px + 2;
+                if (popup_top < 0.f || ty > (float)height()) {
+                    popup_->hide_popup();
+                    return;
+                }
+
                 size_t cursor_in_line = std::min(
                     st.cursor.byte_offset - vl.start_offset,
                     vl.display_text.size());
@@ -2688,7 +2698,7 @@ private:
                         vl.display_text.substr(0, cursor_in_line)));
 
                 // Map canvas-local point to MainWindow coordinate space
-                QPoint local_pt((int)(tx + cw), (int)(ty + lh_px + 2));
+                QPoint local_pt((int)(tx + cw), (int)popup_top);
                 QPoint win_pt = mapTo(window(), local_pt);
 
                 popup_->set_block_type(st.script.blocks[st.cursor.block_idx].type);
