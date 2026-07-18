@@ -227,6 +227,66 @@ public:
         dismiss_suggestions();
     }
 
+    // ── Block-range operations (scene organisation — all undoable) ───────
+    // Ranges are inclusive [first, last] indices into script.blocks.
+
+    // Insert a fresh, empty block of the given type at `at` and move the
+    // cursor to it. `at` is clamped to [0, blocks.size()].
+    void insert_block_at(size_t at, screenplay::BlockType t) {
+        record_structural([&] {
+            auto& blocks = state_.script.blocks;
+            at = std::min(at, blocks.size());
+            blocks.insert(blocks.begin() + (ptrdiff_t)at,
+                screenplay::Block{ t, "", state_.script.next_id++ });
+            state_.cursor = { at, 0 };
+            state_.has_selection = false;
+        });
+    }
+
+    // Duplicate [first, last] right after `last`; cursor lands on the copy.
+    void duplicate_block_range(size_t first, size_t last) {
+        auto& blocks = state_.script.blocks;
+        if (first > last || last >= blocks.size()) return;
+        record_structural([&] {
+            std::vector<screenplay::Block> copy(
+                blocks.begin() + (ptrdiff_t)first,
+                blocks.begin() + (ptrdiff_t)last + 1);
+            for (auto& b : copy) b.id = state_.script.next_id++;
+            blocks.insert(blocks.begin() + (ptrdiff_t)last + 1,
+                          copy.begin(), copy.end());
+            state_.cursor = { last + 1, 0 };
+            state_.has_selection = false;
+        });
+    }
+
+    // Delete [first, last]; keeps the document non-empty.
+    void delete_block_range(size_t first, size_t last) {
+        auto& blocks = state_.script.blocks;
+        if (first > last || last >= blocks.size()) return;
+        record_structural([&] {
+            blocks.erase(blocks.begin() + (ptrdiff_t)first,
+                         blocks.begin() + (ptrdiff_t)last + 1);
+            if (blocks.empty())
+                state_.script.append(screenplay::BlockType::SceneHeading);
+            state_.cursor = { std::min(first, blocks.size() - 1), 0 };
+            state_.has_selection = false;
+        });
+    }
+
+    // std::rotate over [a, c): the sub-range [b, c) ends up before [a, b).
+    // Used to swap two adjacent scenes. cursor_block: where to land after.
+    void rotate_blocks(size_t a, size_t b, size_t c, size_t cursor_block) {
+        auto& blocks = state_.script.blocks;
+        if (!(a < b && b < c) || c > blocks.size()) return;
+        record_structural([&] {
+            std::rotate(blocks.begin() + (ptrdiff_t)a,
+                        blocks.begin() + (ptrdiff_t)b,
+                        blocks.begin() + (ptrdiff_t)c);
+            state_.cursor = { std::min(cursor_block, blocks.size() - 1), 0 };
+            state_.has_selection = false;
+        });
+    }
+
     // ── Find & Replace (undoable) ─────────────────────────────────────────
 
     // Replaces the first (or all) occurrences of needle across the script.

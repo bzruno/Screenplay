@@ -3898,10 +3898,25 @@ private:
         dc_lay->setContentsMargins(0, 0, 0, 0);
         dc_lay->setSpacing(0);
 
+        // Quick scene filter (Final Draft navigator-style)
+        scene_filter_edit_ = new QLineEdit;
+        scene_filter_edit_->setPlaceholderText("Filter scenes\xe2\x80\xa6");
+        scene_filter_edit_->setClearButtonEnabled(true);
+        scene_filter_edit_->setStyleSheet(
+            "QLineEdit { background:#1C1B1F; color:#E6E1E5; border:none;"
+            "            border-bottom:1px solid #49454F; padding:6px 8px;"
+            "            font-size:11px; }");
+        dc_lay->addWidget(scene_filter_edit_);
+        connect(scene_filter_edit_, &QLineEdit::textChanged,
+                this, [this](const QString&){ apply_scene_filter(); });
+
         scene_list_ = new QListWidget;
         scene_list_->setStyleSheet(
             "QListWidget { background:#2D2C31; border:none; color:#E6E1E5; font-size:11px; }"
             "QListWidget::item:selected { background:#4F378A; border-radius:6px; }");
+        scene_list_->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(scene_list_, &QWidget::customContextMenuRequested,
+                this, &MainWindow::scene_context_menu);
         dc_lay->addWidget(scene_list_);
 
         scene_dock_ = new QDockWidget("Scenes", this);
@@ -4019,6 +4034,97 @@ private:
             "There are unsaved changes. Continue?") != QMessageBox::Yes;
     }
 
+    // Inclusive block range [heading, last] of the row-th scene in the list.
+    struct SceneRange { size_t heading; size_t last; };
+    bool scene_range_for_row(int row, SceneRange& out) const {
+        const auto& blocks = canvas_->ctrl().state().script.blocks;
+        int  n = -1;
+        bool found = false;
+        for (size_t bi = 0; bi < blocks.size(); ++bi) {
+            if (blocks[bi].type != screenplay::BlockType::SceneHeading) continue;
+            if (found) { out.last = bi - 1; return true; }
+            if (++n == row) { out.heading = bi; found = true; }
+        }
+        if (found) { out.last = blocks.size() - 1; return true; }
+        return false;
+    }
+
+    void after_scene_op() {
+        canvas_->request_relayout();
+        emit canvas_->script_changed();
+        canvas_->scroll_to_block(canvas_->ctrl().state().cursor.block_idx);
+        canvas_->update();
+    }
+
+    void scene_context_menu(const QPoint& pos) {
+        auto* item = scene_list_->itemAt(pos);
+        const int row = item ? scene_list_->row(item) : -1;
+        const int scene_count = scene_list_->count();
+
+        SceneRange range{};
+        const bool has_scene = (row >= 0) && scene_range_for_row(row, range);
+
+        QMenu menu(this);
+        auto* act_new  = menu.addAction("New Scene After");
+        menu.addSeparator();
+        auto* act_dup  = menu.addAction("Duplicate Scene");
+        auto* act_del  = menu.addAction("Delete Scene\xe2\x80\xa6");
+        menu.addSeparator();
+        auto* act_up   = menu.addAction("Move Scene Up");
+        auto* act_down = menu.addAction("Move Scene Down");
+
+        act_dup ->setEnabled(has_scene);
+        act_del ->setEnabled(has_scene);
+        act_up  ->setEnabled(has_scene && row > 0);
+        act_down->setEnabled(has_scene && row + 1 < scene_count);
+
+        auto* chosen = menu.exec(scene_list_->viewport()->mapToGlobal(pos));
+        if (!chosen) return;
+        auto& ctrl = canvas_->ctrl();
+
+        if (chosen == act_new) {
+            const size_t at = has_scene
+                ? range.last + 1
+                : ctrl.state().script.blocks.size();
+            ctrl.insert_block_at(at, screenplay::BlockType::SceneHeading);
+            after_scene_op();
+        } else if (chosen == act_dup) {
+            ctrl.duplicate_block_range(range.heading, range.last);
+            after_scene_op();
+        } else if (chosen == act_del) {
+            const QString title = item ? item->text() : QString();
+            if (QMessageBox::question(this, "Delete scene",
+                    QString("Delete \"%1\" and all its content?\n"
+                            "This can be undone with Ctrl+Z.").arg(title))
+                    != QMessageBox::Yes) return;
+            ctrl.delete_block_range(range.heading, range.last);
+            after_scene_op();
+        } else if (chosen == act_up) {
+            SceneRange prev{};
+            if (!scene_range_for_row(row - 1, prev)) return;
+            ctrl.rotate_blocks(prev.heading, range.heading, range.last + 1,
+                               prev.heading);
+            after_scene_op();
+        } else if (chosen == act_down) {
+            SceneRange next{};
+            if (!scene_range_for_row(row + 1, next)) return;
+            // Moved scene ends up after the next scene's block span
+            ctrl.rotate_blocks(range.heading, next.heading, next.last + 1,
+                               range.heading + (next.last - next.heading + 1));
+            after_scene_op();
+        }
+    }
+
+    void apply_scene_filter() {
+        if (!scene_filter_edit_) return;
+        const QString q = scene_filter_edit_->text();
+        for (int r = 0; r < scene_list_->count(); ++r) {
+            auto* it = scene_list_->item(r);
+            it->setHidden(!q.isEmpty() &&
+                          !it->text().contains(q, Qt::CaseInsensitive));
+        }
+    }
+
     void refresh_scenes() {
         scene_list_->clear();
         int n = 0;
@@ -4026,6 +4132,7 @@ private:
             if (b.type == screenplay::BlockType::SceneHeading)
                 scene_list_->addItem(
                     QString("%1. %2").arg(++n).arg(QString::fromStdString(b.text)));
+        apply_scene_filter();
 
         // Auto-scroll scene panel to the scene containing the cursor
         {
@@ -4122,6 +4229,7 @@ private:
 
     ScreenplayCanvas* canvas_      = nullptr;
     QListWidget*      scene_list_  = nullptr;
+    QLineEdit*        scene_filter_edit_ = nullptr;
     StatsPanel*       stats_panel_ = nullptr;
     QDockWidget*      stats_dock_  = nullptr;
     QDockWidget*      scene_dock_  = nullptr;
