@@ -4819,10 +4819,24 @@ private:
         }
     }
 
+    // Returns true if the caller should ABORT the pending action (new/open/
+    // close). False means it's safe to proceed — either nothing was dirty,
+    // or the user explicitly chose to save or discard.
     bool dirty_confirm() {
         if (!canvas_->ctrl().state().dirty) return false;
-        return QMessageBox::question(this, "Warning",
-            "There are unsaved changes. Continue?") != QMessageBox::Yes;
+        auto reply = QMessageBox::question(this, "Unsaved Changes",
+            "This screenplay has unsaved changes.\n"
+            "Do you want to save them before continuing?",
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+            QMessageBox::Save);
+        if (reply == QMessageBox::Cancel) return true;
+        if (reply == QMessageBox::Save) {
+            on_save();
+            // Save As can itself be cancelled, or writing can fail — in
+            // either case the document is still dirty, so abort too.
+            if (canvas_->ctrl().state().dirty) return true;
+        }
+        return false;   // Discard, or Save succeeded
     }
 
     // Inclusive block range [heading, last] of the row-th scene in the list.
