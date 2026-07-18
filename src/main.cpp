@@ -1275,6 +1275,10 @@ signals:
     void script_changed();
     void autosave_requested();
     void zoom_changed(float z);
+    // Emitted when Escape reaches the editor with nothing left to dismiss
+    // (no popup, no character highlight) — MainWindow uses it to leave
+    // Focus Mode / full screen.
+    void escape_pressed();
 
 protected:
     bool focusNextPrevChild(bool) override { return false; }
@@ -1572,12 +1576,14 @@ protected:
             case Qt::Key_Home:      ke.key = K::Home;      break;
             case Qt::Key_End:       ke.key = K::End;       break;
             case Qt::Key_Escape:
-                // Escape with no popup: clear character highlight first,
-                // then fall back to the normal editor escape
+                // Escape with no popup: clear character highlight first;
+                // otherwise let MainWindow leave Focus Mode / full screen
+                // (falls through to the normal editor escape either way).
                 if (!highlight_character_.empty()) {
                     set_character_highlight(highlight_character_); // toggle off
                     return;
                 }
+                emit escape_pressed();
                 ke.key = K::Escape;
                 break;
             default:
@@ -3653,6 +3659,12 @@ public:
                 this,    &MainWindow::on_autosave);
         connect(canvas_, &ScreenplayCanvas::zoom_changed,
                 this,    [this](float){ update_zoom(); });
+        connect(canvas_, &ScreenplayCanvas::escape_pressed, this, [this]{
+            // One state at a time, like the popup/highlight priority above:
+            // leave Focus Mode first, then full screen on a second Escape.
+            if (focus_mode_)       { set_focus_mode(false); return; }
+            if (isFullScreen())    { on_fullscreen();        return; }
+        });
 
         // Restore persisted zoom (saved on close, previously never re-applied)
         canvas_->set_zoom(cfg.zoom());
