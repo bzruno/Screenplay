@@ -189,6 +189,14 @@ namespace MD3 {
     inline QString pressedSoft() {
         return dark ? rgba(QColor(255,255,255), 36) : rgba(QColor(0,0,0), 28);
     }
+
+    // Neutral translucent overlay for on-page editor chrome (highlights,
+    // selection, active-block tint). White-on-dark-page / black-on-light-page,
+    // so it reads consistently against whatever colour the page currently is.
+    inline QColor pageOverlay(int lightAlpha, int darkAlpha) {
+        return dark ? QColor(255, 255, 255, darkAlpha)
+                    : QColor(0, 0, 0, lightAlpha);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,25 +218,6 @@ static void draw_page_shadow(QPainter& painter, const QRectF& page_rect) {
         c.setAlpha(std::max(1, (int)(kAlpha * (1.f - t))));
         painter.fillRect(page_rect.adjusted(-spread, -spread, spread, spread), c);
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Block colours (for the indicator strip)
-// ─────────────────────────────────────────────────────────────────────────────
-static QColor block_color(screenplay::BlockType t) {
-    QColor c;
-    switch (t) {
-    case screenplay::BlockType::SceneHeading:  c = { 0xD0, 0xBC, 0xFF }; break;
-    case screenplay::BlockType::Action:        c = { 0xA8, 0xD5, 0xA2 }; break;
-    case screenplay::BlockType::Character:     c = { 0xFF, 0xB4, 0x6B }; break;
-    case screenplay::BlockType::Parenthetical: c = { 0xFF, 0xE0, 0x6B }; break;
-    case screenplay::BlockType::Dialogue:      c = { 0x6B, 0xC5, 0xFF }; break;
-    case screenplay::BlockType::Transition:    c = { 0xFF, 0x6B, 0xB0 }; break;
-    case screenplay::BlockType::DualDialogue:  c = { 0x6B, 0xC5, 0xFF }; break;
-    default: return MD3::Outline;
-    }
-    // Pastel accents lose contrast on light chrome — darken them there.
-    return MD3::dark ? c : c.darker(150);
 }
 
 static const char* block_label(screenplay::BlockType t) {
@@ -843,12 +832,6 @@ public:
         update();
     }
 
-    void set_block_type(screenplay::BlockType t) {
-        if (block_type_ == t) return;
-        block_type_ = t;
-        update();
-    }
-
     void hide_popup() { hide(); }
     bool is_visible() const { return isVisible(); }
 
@@ -920,11 +903,8 @@ protected:
             if (abs_i == sel_) {
                 QPainterPath sel_bg;
                 sel_bg.addRoundedRect(r.adjusted(3, 1, -3, -1), 5, 5);
-                QColor sel_col = block_color(block_type_);
-                sel_col.setAlpha(180);
-                p.fillPath(sel_bg, sel_col);
-                // Dark theme: pastel fill → dark text. Light: darkened fill → white.
-                p.setPen(MD3::dark ? QColor(0x1A, 0x1A, 0x1A) : QColor(Qt::white));
+                p.fillPath(sel_bg, MD3::HoverBg);   // neutral active fill
+                p.setPen(MD3::Text);
             } else {
                 p.setPen(MD3::OnSurface);
             }
@@ -959,7 +939,6 @@ private:
     }
 
     std::vector<std::string>  suggs_;
-    screenplay::BlockType     block_type_    = screenplay::BlockType::Action;
     int sel_           = -1;
     int scroll_offset_ = 0;
     int item_h_        = 22;
@@ -2287,7 +2266,7 @@ private:
                 line_font.setUnderline(blk_ref.is_underline_);
                 const QFontMetricsF line_fm(line_font);
 
-                // ── Active-block highlight: colored left border + faint tint ────
+                // ── Active-block highlight: neutral left marker + faint tint ────
                 bool active = (vl.block_idx == st.cursor.block_idx);
                 if (active && vl.line_in_block == 0) {
                     float block_line_count = (float)std::max(size_t(1),
@@ -2297,26 +2276,21 @@ private:
                                 if (l2.block_idx == vl.block_idx) ++cnt;
                             return cnt;
                         }());
-                    QColor bc = block_color(blk_ref.type);
                     float bh = lh_px * block_line_count + 4;
-                    // Faint tinted background across the full page width
-                    painter.fillRect(
-                        QRectF(px, ty - 2, pw, bh),
-                        QColor(bc.red(), bc.green(), bc.blue(), 14));
-                    // 3px solid left border in block colour
-                    painter.fillRect(
-                        QRectF(px, ty - 2, 3, bh),
-                        QColor(bc.red(), bc.green(), bc.blue(), 200));
+                    // Faint neutral tint across the full page width
+                    painter.fillRect(QRectF(px, ty - 2, pw, bh),
+                                     MD3::pageOverlay(8, 12));
+                    // 2px neutral left marker (graphite/grey, not a colour)
+                    painter.fillRect(QRectF(px, ty - 2, 2, bh), MD3::PageTextDim);
                 }
 
                 // ── Character dialogue highlight (behind text) ───────────────
                 if (vl.block_idx < char_highlight_blocks_.size() &&
                         char_highlight_blocks_[vl.block_idx]) {
-                    const QColor hc = block_color(screenplay::BlockType::Character);
                     const float hw = (float)line_fm.horizontalAdvance(
                         QString::fromStdString(vl.display_text));
                     painter.fillRect(QRectF(tx - 5, ty, hw + 10, lh_px),
-                                     QColor(hc.red(), hc.green(), hc.blue(), 42));
+                                     MD3::pageOverlay(12, 16));
                 }
 
                 // ── Search highlights (drawn BEHIND text) ─────────────────────
@@ -2338,11 +2312,13 @@ private:
                         float hx1 = tfm.horizontalAdvance(
                             QString::fromStdString(vl.display_text.substr(0, ov_e)));
 
+                        // Neutral highlights: current match darker/stronger,
+                        // other matches a lighter wash — both greyscale.
                         bool is_cur = (mi == search_state_.current);
                         painter.fillRect(
                             QRectF(tx + hx0, ty, hx1 - hx0, lh_px),
-                            is_cur ? QColor(255, 165,   0, 210)
-                                   : QColor(255, 235,  59, 140));
+                            is_cur ? MD3::pageOverlay(95, 82)
+                                   : MD3::pageOverlay(42, 38));
                     }
                 }
 
@@ -2390,7 +2366,7 @@ private:
 
                             painter.fillRect(
                                 QRectF(tx + hx0, ty, hx1 - hx0, lh_px),
-                                QColor(41, 121, 255, 90));
+                                MD3::pageOverlay(52, 46));   // neutral selection
                         }
                     }
                 }
@@ -2566,7 +2542,9 @@ private:
                         float cw = line_fm.horizontalAdvance(
                             QString::fromStdString(
                                 vl.display_text.substr(0, cursor_in_line)));
-                        painter.setPen(QPen(block_color(blk_c.type), 2.f));
+                        // Caret in the page's ink colour (black on a white
+                        // page, light grey on a dark page) — like Word.
+                        painter.setPen(QPen(MD3::PageText, 2.f));
                         painter.drawLine(
                             QPointF(tx + cw, ty),
                             QPointF(tx + cw, ty + lh_px));
@@ -2583,12 +2561,9 @@ private:
         if (st.script.blocks.empty() ||
             st.cursor.block_idx >= st.script.blocks.size()) return;
         const auto& cb  = st.script.blocks[st.cursor.block_idx];
-        QColor col = block_color(cb.type);
 
-        // 5px coloured strip on left
-        painter.fillRect(0, 0, 5, height(), col);
-
-        // Badge
+        // Neutral current-element badge, top-left, on the canvas backdrop.
+        // No colour coding, no coloured edge strip — flat greyscale chrome.
         QFont f; f.setFamily("Segoe UI"); f.setPixelSize(10); f.setBold(true);
         apply_render_quality(f);
         painter.setFont(f);
@@ -2596,10 +2571,12 @@ private:
         QString lbl = QString::fromUtf8(block_label(cb.type));
         int tw = fm.horizontalAdvance(lbl);
 
-        QRect badge(8, 8, tw + 14, 20);
-        QPainterPath bp; bp.addRoundedRect(badge, 6, 6);
-        painter.fillPath(bp, QColor(col.red(), col.green(), col.blue(), 50));
-        painter.setPen(col);
+        QRect badge(10, 10, tw + 16, 20);
+        QPainterPath bp; bp.addRoundedRect(badge, 5, 5);
+        painter.fillPath(bp, MD3::Bg1);
+        painter.setPen(QPen(MD3::Border, 1));
+        painter.drawPath(bp);
+        painter.setPen(MD3::TextDim);
         painter.drawText(badge, Qt::AlignCenter, lbl);
     }
 
@@ -2673,7 +2650,6 @@ private:
                 QPoint local_pt((int)(tx + cw), (int)(ty + lh_px + 2));
                 QPoint win_pt = mapTo(window(), local_pt);
 
-                popup_->set_block_type(st.script.blocks[st.cursor.block_idx].type);
                 popup_->show_suggestions(st.suggestions, st.suggestion_idx,
                                          win_pt);
                 return;
