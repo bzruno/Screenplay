@@ -33,6 +33,7 @@ set(SOURCES
     src/main.cpp
     src/screenplay_canvas.hpp
     src/main_window.hpp
+    src/ui/main_menu.cpp
     src/ui/toast.hpp
     src/ui/script_language_dialog.hpp
     src/ui/autocomplete_popup.hpp
