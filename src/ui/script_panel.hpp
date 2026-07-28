@@ -19,7 +19,6 @@
 #include "../config/ui_strings.hpp"
 #include "../database/script_index.hpp"
 #include "../reports/script_reports.hpp"
-#include "../stats/script_stats.hpp"
 
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -100,8 +99,7 @@ public:
     }
 
     void refresh(const screenplay::Script& script,
-                 const screenplay::layout::PageList& pages,
-                 const screenplay::stats::ScriptStats& stats) {
+                 const screenplay::layout::PageList& pages) {
         const auto index = database::ScriptIndexBuilder::build(script, pages);
 
         int spoken = 0;

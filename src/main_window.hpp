@@ -129,7 +129,6 @@ using screenplay::ui::ScriptPanel;
 #  include <windows.h>
 #endif
 #include "config/app_config.hpp"
-#include "stats/script_stats.hpp"
 #include "stats/scene_character_index.hpp"
 #include "spellcheck/spell_checker.hpp"
 #include "database/script_index.hpp"
@@ -1529,9 +1528,7 @@ private:
     void refresh_script_panel() {
         if (!script_dock_ || !script_dock_->isVisible()) return;
         const auto& script = canvas_->ctrl().state().script;
-        script_panel_->refresh(script, canvas_->pages(),
-            screenplay::stats::StatsEngine::compute(
-                script, (int)canvas_->pages().size()));
+        script_panel_->refresh(script, canvas_->pages());
     }
 
     void update_title() {
