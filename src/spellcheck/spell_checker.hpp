@@ -100,6 +100,9 @@ public:
 
     bool available() const { return available_; }
 
+    /// More than a handful of replacements is a menu nobody reads.
+    static constexpr int kMaxSuggestions = 5;
+
     // Replace checker set with the supplied language tags (e.g. "en-US", "pt-BR").
     // Safe to call at any time after construction.
     void reinit(const std::vector<std::string>& lang_tags) {
@@ -120,6 +123,35 @@ public:
         result = check_multi(text);
 #endif
         return result;
+    }
+
+    /// Replacements for a single word, fetched when the reader asks for
+    /// them. One COM round-trip, on a right-click, where it is affordable.
+    std::vector<std::string> suggest(const std::string& word) const {
+        std::vector<std::string> out;
+        if (!available_ || word.empty()) return out;
+#ifdef _WIN32
+        const std::wstring wword = utf8_to_wide(word);
+        for (const auto& checker : checkers_) {
+            IEnumString* raw = nullptr;
+            if (!seh_try_suggest(checker.Get(), wword.c_str(), &raw) || !raw)
+                continue;
+            Microsoft::WRL::ComPtr<IEnumString> suggestions;
+            suggestions.Attach(raw);
+            LPOLESTR text = nullptr;
+            ULONG fetched = 0;
+            int taken = 0;
+            while (suggestions->Next(1, &text, &fetched) == S_OK
+                   && taken < kMaxSuggestions) {
+                std::string candidate = wide_to_utf8(text);
+                CoTaskMemFree(text);
+                if (std::find(out.begin(), out.end(), candidate) == out.end())
+                    out.push_back(std::move(candidate));
+                ++taken;
+            }
+        }
+#endif
+        return out;
     }
 
     void add_to_dictionary(const std::string& word) {
@@ -194,23 +226,12 @@ private:
             ms.start  = byte_start;
             ms.length = byte_len;
 
-            IEnumString* raw_sugg = nullptr;
-            if (seh_try_suggest(checker.Get(),
-                                wtext.substr(start, len).c_str(), &raw_sugg)
-                && raw_sugg)
-            {
-                Microsoft::WRL::ComPtr<IEnumString> sugg_enum;
-                sugg_enum.Attach(raw_sugg);
-                LPOLESTR sugg = nullptr;
-                ULONG fetched = 0;
-                int count = 0;
-                while (sugg_enum->Next(1, &sugg, &fetched) == S_OK && count < 5) {
-                    ms.suggestions.push_back(wide_to_utf8(sugg));
-                    CoTaskMemFree(sugg);
-                    ++count;
-                }
-            }
-
+            // No Suggest() here. Finding a misspelling is one COM call for
+            // the whole block; asking for replacements is another call PER
+            // WORD, and on a page the checker dislikes that was the bulk of
+            // the cost — for text that may never be right-clicked. See
+            // suggest(), which the context menu calls for the one word under
+            // the cursor.
             result.push_back(std::move(ms));
             err.Reset();
         }

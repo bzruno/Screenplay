@@ -13,6 +13,7 @@
 #include "../src/model/model.hpp"
 #include "../src/model/undo_stack.hpp"
 #include "../src/editor/autocomplete.hpp"
+#include "../src/parsing/paste_parser.hpp"
 #include "../src/io/exporter.hpp"
 #include "../src/io/importer.hpp"
 
@@ -147,6 +148,75 @@ void test_autocomplete() {
     CHECK(s4[0] == "JOHN");
 }
 
+void test_character_smarttype() {
+    SECTION("Character SmartType — names vs. extensions")
+    using namespace screenplay;
+    using namespace screenplay::editor;
+
+    AutocompleteSystem sys;
+
+    // A committed cue with an extension must train the bare NAME only, so the
+    // name dropdown never offers a "JOHN (V.O.)" duplicate of "JOHN".
+    sys.train(BlockType::Character, "JOHN");
+    sys.train(BlockType::Character, "JOHN (V.O.)");
+
+    auto names = sys.query(BlockType::Character, "JOHN", std::strlen("JOHN"));
+    CHECK(names.size() == 1);
+    CHECK(names[0] == "JOHN");
+
+    // Typing "(" after the name switches to extension suggestions: the curated
+    // list, in industry-usage order.
+    std::string typing = "JOHN (";
+    auto exts = sys.query(BlockType::Character, typing, typing.size());
+    CHECK(exts.size() == 6);
+    CHECK(exts[0] == "V.O.");
+    CHECK(exts[1] == "O.S.");
+    CHECK(exts[2] == "O.C.");
+    CHECK(exts[3] == "CONT'D");
+    CHECK(exts[4] == "FILTERED");
+    CHECK(exts[5] == "PRE-LAP");
+
+    // Prefix-filtered inside the parentheses, preserving order.
+    std::string typingO = "JOHN (O";
+    auto extO = sys.query(BlockType::Character, typingO, typingO.size());
+    CHECK(extO.size() == 2);
+    CHECK(extO[0] == "O.S.");
+    CHECK(extO[1] == "O.C.");
+
+    // Scene heading prefixes now include INT/EXT.
+    auto scene = sys.query(BlockType::SceneHeading, "INT", std::strlen("INT"));
+    CHECK(scene.size() == 2);
+    CHECK(scene[0] == "INT.");
+    CHECK(scene[1] == "INT/EXT.");
+}
+
+void test_paste_parser() {
+    SECTION("Paste parser — element recognition")
+    using namespace screenplay;
+
+    std::vector<std::string> paras = {
+        "INT. HOUSE - DAY",       // Scene Heading
+        "John walks in slowly.",  // Action
+        "JOHN",                   // Character
+        "(smiling)",              // Parenthetical
+        "Hello there.",           // Dialogue (after parenthetical)
+        "JOHN (V.O.)",            // Character (extension kept in text)
+        "That was the start.",    // Dialogue (after character)
+        "CUT TO:"                 // Transition
+    };
+
+    auto types = parse::classify_paragraphs(paras);
+    CHECK(types.size() == 8);
+    CHECK(types[0] == BlockType::SceneHeading);
+    CHECK(types[1] == BlockType::Action);
+    CHECK(types[2] == BlockType::Character);
+    CHECK(types[3] == BlockType::Parenthetical);
+    CHECK(types[4] == BlockType::Dialogue);
+    CHECK(types[5] == BlockType::Character);
+    CHECK(types[6] == BlockType::Dialogue);
+    CHECK(types[7] == BlockType::Transition);
+}
+
 void test_layout_engine() {
     SECTION("Layout engine — pagination")
     using namespace screenplay;
@@ -260,6 +330,62 @@ void test_fdx_roundtrip() {
     CHECK(loaded.blocks[0].text == "EXT. BEACH - SUNSET");
 }
 
+void test_fdx_fidelity() {
+    SECTION("FDX fidelity — styles, scene numbers, entities, robustness")
+    using namespace screenplay;
+    using namespace screenplay::io;
+
+    // ── Styles + scene numbers survive a round trip ──────────────────────
+    Script s;
+    { Block b{BlockType::SceneHeading, "INT. HOUSE - DAY", 1}; b.scene_number = "1A";
+      s.blocks.push_back(b); }
+    { Block b{BlockType::Dialogue, "Hi.", 2};
+      b.bold_runs = {{0, b.text.size()}}; b.underline_runs = {{0, b.text.size()}};
+      s.blocks.push_back(b); }
+    s.next_id = 3;
+
+    std::string xml = FDXExporter::to_string(s);
+    CHECK(xml.find("Number=\"1A\"")             != std::string::npos);
+    CHECK(xml.find("Style=\"Bold+Underline\"")  != std::string::npos);
+    CHECK(xml.find("<Bold>")                     == std::string::npos); // old form gone
+
+    Script r = FDXImporter::parse(xml);
+    CHECK(r.blocks.size() == 2);
+    CHECK(r.blocks[0].scene_number == "1A");
+    CHECK(r.blocks[1].is_bold_whole() && r.blocks[1].is_underline_whole()
+          && !r.blocks[1].is_italic_whole());
+
+    // ── Multiple <Text> runs (with attributes) + numeric entities ────────
+    const std::string multi =
+        "<Content><Paragraph Type=\"Action\">"
+        "<Text>He </Text><Text Style=\"Italic\">runs</Text>"
+        "<Text> &#233;&#x21;</Text></Paragraph></Content>";
+    ImportReport rep;
+    Script m = FDXImporter::parse(multi, &rep);
+    CHECK(m.blocks.size() == 1);
+    CHECK(m.blocks[0].text == "He runs \xC3\xA9!");   // concatenated + decoded
+    // Only "runs" (bytes [3,7)) is italic — not the whole block.
+    CHECK(!m.blocks[0].is_italic_whole());
+    CHECK(style_covers(m.blocks[0].italic_runs, 3, 7));
+    CHECK(!style_covers(m.blocks[0].italic_runs, 0, 3));
+
+    // ── Unknown element downgraded to Action and reported ────────────────
+    const std::string shot =
+        "<Content><Paragraph Type=\"Shot\"><Text>ON THE DOOR</Text></Paragraph></Content>";
+    ImportReport rep2;
+    Script sh = FDXImporter::parse(shot, &rep2);
+    CHECK(sh.blocks[0].type == BlockType::Action);
+    CHECK(sh.blocks[0].text == "ON THE DOOR");
+    CHECK(rep2.downgraded_types.size() == 1 && rep2.downgraded_types[0] == "Shot");
+
+    // ── Robustness: truncated / empty / garbage never loop or crash ──────
+    Script trunc = FDXImporter::parse(
+        "<Content><Paragraph Type=\"Action\"><Text>oops");   // no closings
+    CHECK(trunc.blocks.size() >= 1);
+    CHECK(FDXImporter::parse("").blocks.size() == 1);
+    CHECK(FDXImporter::parse("garbage <<< &&&").blocks.size() == 1);
+}
+
 void test_json_roundtrip() {
     SECTION("JSON serialize + deserialize roundtrip")
     using namespace screenplay;
@@ -290,10 +416,13 @@ int main() {
     test_script_model();
     test_undo_stack();
     test_autocomplete();
+    test_character_smarttype();
+    test_paste_parser();
     test_layout_engine();
     test_layout_character_grouping();
     test_fountain_roundtrip();
     test_fdx_roundtrip();
+    test_fdx_fidelity();
     test_json_roundtrip();
 
     std::cout << "\n" << std::string(40, '=') << "\n";

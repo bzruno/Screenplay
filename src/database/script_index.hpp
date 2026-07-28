@@ -5,6 +5,7 @@
 
 #include "../model/model.hpp"
 #include "../layout/layout_engine.hpp"
+#include "../parsing/screenplay_parse.hpp"
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -58,43 +59,10 @@ struct ScriptIndex {
     std::vector<SceneContent>    scenes;
     std::vector<CharacterRecord> characters;
 
-    const SceneContent* find_scene(int scene_number) const {
-        for (const auto& s : scenes)
-            if (s.scene_number == scene_number) return &s;
-        return nullptr;
-    }
-
     const SceneContent* find_scene_by_block(size_t block_idx) const {
         const SceneContent* result = nullptr;
         for (const auto& s : scenes)
             if (s.block_idx <= block_idx) result = &s;
-        return result;
-    }
-
-    const CharacterRecord* find_character(const std::string& name) const {
-        std::string n = norm(name);
-        for (const auto& c : characters)
-            if (c.name == n) return &c;
-        return nullptr;
-    }
-
-    std::vector<const SceneContent*> scenes_for_character(const std::string& name) const {
-        std::vector<const SceneContent*> result;
-        std::string n = norm(name);
-        for (const auto& s : scenes)
-            for (const auto& ch : s.characters)
-                if (ch == n) { result.push_back(&s); break; }
-        return result;
-    }
-
-    std::vector<const CharacterRecord*> characters_in_scene(int scene_number) const {
-        const SceneContent* scene = find_scene(scene_number);
-        if (!scene) return {};
-        std::vector<const CharacterRecord*> result;
-        for (const auto& ch_name : scene->characters) {
-            const CharacterRecord* cr = find_character(ch_name);
-            if (cr) result.push_back(cr);
-        }
         return result;
     }
 
@@ -131,13 +99,21 @@ public:
         // character name → { parenthetical → count }
         std::unordered_map<std::string, std::unordered_map<std::string,int>> char_parens;
 
-        // Find the page number that contains a given block_idx
+        // Page number for a given block_idx — precomputed ONCE in a single
+        // pass over all pages/lines (O(total lines)), then looked up O(1) per
+        // scene heading. The previous version re-scanned every page's every
+        // line for EVERY scene heading (O(scenes * total_lines)), which on a
+        // full-length script (hundreds of pages) took seconds — this was the
+        // actual cause of the multi-second hang after importing a large FDX.
+        std::unordered_map<size_t, int> page_of_block;
+        page_of_block.reserve(script.blocks.size());
+        for (const auto& page : pages)
+            for (const auto& vl : page.lines)
+                if (!vl.is_more && !vl.is_contd)
+                    page_of_block.emplace(vl.block_idx, page.number);
         auto page_for_block = [&](size_t bi) -> int {
-            for (const auto& page : pages)
-                for (const auto& vl : page.lines)
-                    if (vl.block_idx == bi && !vl.is_more && !vl.is_contd)
-                        return page.number;
-            return 1;
+            auto it = page_of_block.find(bi);
+            return it != page_of_block.end() ? it->second : 1;
         };
 
         // Find or create a CharacterRecord by normalized name
@@ -189,13 +165,14 @@ public:
                 if (!current_scene) break;
                 current_scene->block_indices.push_back(i);
 
-                // Normalize: strip trailing parenthetical like " (CONT'D)"
-                std::string raw = b.text;
-                auto paren_pos = raw.find(" (");
-                if (paren_pos != std::string::npos) raw = raw.substr(0, paren_pos);
-                last_character   = normalize(raw);
+                // Split the Character Extension (V.O., O.S., CONT'D, …) from the
+                // name; the name alone identifies the speaker.
+                auto cue = parse::parse_character_cue(b.text);
+                last_character   = normalize(cue.name);
                 last_char_block  = i;
                 last_paren.clear();
+                if (!cue.extension.empty())
+                    ++char_parens[last_character]["(" + cue.extension + ")"];
 
                 if (!last_character.empty()) {
                     // Add to scene's unique character list (in appearance order)
@@ -303,32 +280,11 @@ private:
                                std::string& location,
                                std::string& time_of_day)
     {
-        prefix.clear(); location.clear(); time_of_day.clear();
-        std::string up = heading;
-        for (char& c : up)
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-
-        static const char* kPrefixes[] = { "INT.", "EXT.", "I/E.", nullptr };
-        for (int pi = 0; kPrefixes[pi]; ++pi) {
-            size_t plen = std::strlen(kPrefixes[pi]);
-            if (up.rfind(kPrefixes[pi], 0) == 0) {
-                prefix = kPrefixes[pi];
-                std::string rest = up.substr(plen);
-                size_t sp = rest.find_first_not_of(' ');
-                if (sp == std::string::npos) return;
-                rest = rest.substr(sp);
-                auto dash = rest.rfind(" - ");
-                if (dash != std::string::npos) {
-                    location    = rest.substr(0, dash);
-                    time_of_day = rest.substr(dash + 3);
-                } else {
-                    location = rest;
-                }
-                return;
-            }
-        }
-        // No recognized prefix — put whole heading in location
-        location = up;
+        // Delegate to the shared parser so layout, stats and database agree.
+        auto p = parse::parse_scene_heading(heading);
+        prefix      = p.int_ext;
+        location    = p.location;
+        time_of_day = p.time_of_day;
     }
 };
 

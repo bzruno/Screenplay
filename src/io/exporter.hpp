@@ -1,9 +1,12 @@
 #pragma once
 #include "../model/model.hpp"
+#include "fdx_element_map.hpp"
 #include <string>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <algorithm>
+#include <vector>
 
 namespace screenplay::io {
 
@@ -21,7 +24,9 @@ public:
             for (size_t i = 0; i < tp.authors.size(); ++i) {
                 out += (i == 0 ? "Author: " : "Author: ") + tp.authors[i] + "\n";
             }
-            if (!tp.contact_left.empty()) out += "Contact: " + tp.contact_left + "\n";
+            if (!tp.based_on.empty()) out += "Source: " + tp.based_on + "\n";
+            for (const auto& line : tp.contact_block())
+                out += "Contact: " + line + "\n";
             out += "\n";
         }
 
@@ -83,7 +88,9 @@ public:
             tp_para("Title",   tp.title);
             tp_para("Credit",  tp.credit_type);
             for (const auto& a : tp.authors) tp_para("Author", a);
-            tp_para("Contact", tp.contact_left);
+            tp_para("Source", tp.based_on);
+            for (const auto& line : tp.contact_block())
+                tp_para("Contact", line);
             xml += "  </Content>\n";
             xml += "</TitlePage>\n";
         }
@@ -91,24 +98,47 @@ public:
         xml += "<Content>\n";
 
         for (const auto& b : script.blocks) {
-            const char* elem = "Action";
-            switch (b.type) {
-            case BlockType::SceneHeading:  elem = "Scene Heading"; break;
-            case BlockType::Character:     elem = "Character";     break;
-            case BlockType::Parenthetical: elem = "Parenthetical"; break;
-            case BlockType::Dialogue:      elem = "Dialogue";      break;
-            case BlockType::Transition:    elem = "Transition";    break;
-            case BlockType::DualDialogue:  elem = "Dialogue";      break;
-            default: break;
-            }
             xml += "  <Paragraph Type=\"";
-            xml += elem;
-            xml += "\">\n    <Text>";
-            xml += xml_escape(b.text);
-            xml += "</Text>\n";
-            if (b.is_bold_)      xml += "    <Bold>YES</Bold>\n";
-            if (b.is_italic_)    xml += "    <Italic>YES</Italic>\n";
-            if (b.is_underline_) xml += "    <Underline>YES</Underline>\n";
+            xml += fdx_element_name(b.type);
+            xml += "\"";
+            // Scene numbers travel on the Paragraph as Final Draft expects,
+            // and only for the Scene Heading that owns them. Preserved verbatim.
+            if (b.type == BlockType::SceneHeading && !b.scene_number.empty()) {
+                xml += " Number=\"";
+                xml += xml_escape(b.scene_number);
+                xml += "\"";
+            }
+            // Author alignment overrides map straight onto Final Draft's own
+            // Paragraph Alignment attribute, so they survive a round trip
+            // through FD / Fade In / WriterDuet instead of being silently
+            // flattened. Default is omitted (that IS "no override").
+            if (b.align != BlockAlign::Default) {
+                xml += " Alignment=\"";
+                xml += b.align == BlockAlign::Left   ? "Left"
+                     : b.align == BlockAlign::Center ? "Center"
+                                                     : "Right";
+                xml += "\"";
+            }
+            // Type stays "Dialogue" so any reader still gets valid dialogue;
+            // this extra attribute is what lets us restore the simultaneous
+            // pairing on import instead of silently flattening it.
+            if (b.type == BlockType::DualDialogue)
+                xml += " DualDialogue=\"Yes\"";
+            xml += ">\n";
+            // One <Text> run per style-homogeneous segment of the block's
+            // text (Style="Bold+Italic" etc, the attribute Final Draft, Fade
+            // In and WriterDuet all read) — so a bolded WORD inside an
+            // otherwise-plain line round-trips as that same partial styling,
+            // not as the whole paragraph.
+            xml += text_runs_xml(b);
+            // Author notes travel as Final Draft's own <ScriptNote>, nested in
+            // the paragraph they annotate — the same element the importer
+            // reads back (and which it used to discard outright).
+            if (!b.note.empty()) {
+                xml += "    <ScriptNote><Text>";
+                xml += xml_escape(b.note);
+                xml += "</Text></ScriptNote>\n";
+            }
             xml += "  </Paragraph>\n";
         }
 
@@ -123,6 +153,52 @@ public:
     }
 
 private:
+    // Splits `b.text` into style-homogeneous segments (cut at every
+    // bold/italic/underline range boundary that falls inside it) and emits
+    // one `<Text Style="…">…</Text>` per segment. Style is omitted when a
+    // segment is unstyled. Always emits at least one <Text> (possibly empty).
+    static std::string text_runs_xml(const Block& b) {
+        std::vector<size_t> cuts = { 0, b.text.size() };
+        auto add_cuts = [&](const StyleRuns& runs) {
+            for (const auto& [rs, re] : runs) { cuts.push_back(rs); cuts.push_back(re); }
+        };
+        add_cuts(b.bold_runs);
+        add_cuts(b.italic_runs);
+        add_cuts(b.underline_runs);
+        std::sort(cuts.begin(), cuts.end());
+        cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+
+        std::string out;
+        for (size_t i = 0; i + 1 < cuts.size(); ++i) {
+            const size_t s = cuts[i], e = cuts[i + 1];
+            if (s >= e) continue;
+            out += "    <Text";
+            out += run_style_attr(style_covers(b.bold_runs,      s, e),
+                                  style_covers(b.italic_runs,    s, e),
+                                  style_covers(b.underline_runs, s, e));
+            out += ">";
+            out += xml_escape(b.text.substr(s, e - s));
+            out += "</Text>\n";
+        }
+        if (out.empty()) out = "    <Text></Text>\n";   // empty block text
+        return out;
+    }
+
+    // Builds the ` Style="…"` attribute, or "" when unstyled. Multiple styles
+    // are joined with '+', matching Final Draft's AdornmentStyle string
+    // (e.g. Style="Bold+Underline").
+    static std::string run_style_attr(bool bold, bool italic, bool underline) {
+        std::string style;
+        auto add = [&](const char* name) {
+            if (!style.empty()) style += '+';
+            style += name;
+        };
+        if (bold)      add("Bold");
+        if (italic)    add("Italic");
+        if (underline) add("Underline");
+        return style.empty() ? std::string{} : " Style=\"" + style + "\"";
+    }
+
     static std::string xml_escape(const std::string& s) {
         std::string out;
         out.reserve(s.size());
@@ -156,8 +232,21 @@ public:
             j += "\"" + json_escape(tp.authors[i]) + "\"";
         }
         j += "],\n";
-        j += "    \"contact_left\": \"" + json_escape(tp.contact_left) + "\"\n";
+        j += "    \"contact_left\": \"" + json_escape(tp.contact_left) + "\",\n";
+        j += "    \"based_on\": \""     + json_escape(tp.based_on)     + "\",\n";
+        j += "    \"address_2\": \""    + json_escape(tp.address_2)    + "\",\n";
+        j += "    \"contact_1\": \""    + json_escape(tp.contact_1)    + "\",\n";
+        j += "    \"contact_2\": \""    + json_escape(tp.contact_2)    + "\",\n";
+        // Cover artwork path (empty when the cover uses a typed title).
+        j += "    \"logo_path\": \""    + json_escape(tp.logo_path)    + "\"\n";
         j += "  },\n";
+        // Production state, both omitted at their defaults so a script that
+        // never went into production stays byte-identical to before.
+        if (script.current_revision != Revision::None)
+            j += "  \"current_revision\": "
+               + std::to_string(static_cast<int>(script.current_revision)) + ",\n";
+        if (script.scenes_locked)
+            j += "  \"scenes_locked\": true,\n";
         j += "  \"blocks\": [\n";
         for (size_t i = 0; i < script.blocks.size(); ++i) {
             const auto& b = script.blocks[i];
@@ -168,9 +257,24 @@ public:
             j += ", \"text\": \"";
             j += json_escape(b.text);
             j += "\"";
-            if (b.is_bold_)      j += ", \"bold\": true";
-            if (b.is_italic_)    j += ", \"italic\": true";
-            if (b.is_underline_) j += ", \"underline\": true";
+            if (!b.bold_runs.empty())      j += ", \"bold_runs\": "      + runs_json(b.bold_runs);
+            if (!b.italic_runs.empty())    j += ", \"italic_runs\": "    + runs_json(b.italic_runs);
+            if (!b.underline_runs.empty()) j += ", \"underline_runs\": " + runs_json(b.underline_runs);
+            if (!b.scene_number.empty())
+                j += ", \"scene_number\": \"" + json_escape(b.scene_number) + "\"";
+            // Omitted when Default, so files written before alignment existed
+            // and files with no overrides stay byte-identical.
+            if (b.align != BlockAlign::Default)
+                j += ", \"align\": " + std::to_string(static_cast<int>(b.align));
+            if (!b.note.empty())
+                j += ", \"note\": \"" + json_escape(b.note) + "\"";
+            if (b.revision != Revision::None)
+                j += ", \"revision\": "
+                   + std::to_string(static_cast<int>(b.revision));
+            if (b.omitted)
+                j += ", \"omitted\": true";
+            if (b.page_break_before)
+                j += ", \"page_break\": true";
             j += " }";
             if (i + 1 < script.blocks.size()) j += ",";
             j += "\n";
@@ -186,6 +290,20 @@ public:
     }
 
 private:
+    // Serializes a StyleRuns list as a JSON array of [start, end] pairs, e.g.
+    // "[[0,5],[12,15]]" — the internal .spl format, not FDX, so a plain
+    // nested array is fine (no need to match any external schema).
+    static std::string runs_json(const StyleRuns& runs) {
+        std::string out = "[";
+        for (size_t i = 0; i < runs.size(); ++i) {
+            if (i) out += ", ";
+            out += "[" + std::to_string(runs[i].first) + ", "
+                       + std::to_string(runs[i].second) + "]";
+        }
+        out += "]";
+        return out;
+    }
+
     static std::string json_escape(const std::string& s) {
         std::string out;
         for (char c : s) {

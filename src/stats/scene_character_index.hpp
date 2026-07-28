@@ -4,6 +4,7 @@
 // Pure C++ / std only — zero Qt dependencies.
 
 #include "../model/model.hpp"
+#include "../parsing/screenplay_parse.hpp"
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -135,22 +136,6 @@ public:
     const std::vector<SceneInfo>&     scenes()     const { return scenes_; }
     const std::vector<CharacterInfo>& characters() const { return characters_; }
 
-    const CharacterInfo* find_character(const std::string& name) const {
-        const std::string n = normalize(name);
-        for (const auto& c : characters_)
-            if (c.name == n) return &c;
-        return nullptr;
-    }
-
-    // Returns the last scene whose block_idx <= block_idx (i.e., the scene
-    // that contains the given block), or nullptr if before any scene.
-    const SceneInfo* find_scene(size_t block_idx) const {
-        const SceneInfo* result = nullptr;
-        for (const auto& s : scenes_)
-            if (s.block_idx <= block_idx) result = &s;
-        return result;
-    }
-
 private:
     std::vector<SceneInfo>     scenes_;
     std::vector<CharacterInfo> characters_;
@@ -181,7 +166,9 @@ private:
         switch (b.type) {
 
         case BT::Character:
-            pending_char_ = normalize(b.text);
+            // Strip the Character Extension so "JOÃO (V.O.)" and "JOÃO" are the
+            // same speaker; statistics and highlighting key off the name only.
+            pending_char_ = normalize(parse::parse_character_cue(b.text).name);
             break;
 
         case BT::Parenthetical:

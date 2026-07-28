@@ -1,0 +1,2257 @@
+#pragma once
+// screenplay_canvas.hpp
+// The ScreenplayCanvas widget, its private page-font helpers (StyledFont /
+// StyledFontSet / draw_page_shadow) and the `icons` compatibility shim.
+// Extracted verbatim from main.cpp (behaviour preserved by construction) so
+// the class can be shared with the MainWindow translation units.
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+#include <QApplication>
+#include <QWidget>
+#include <QPainter>
+#include <QPainterPath>
+#include <QKeyEvent>
+#include <QWheelEvent>
+#include <QResizeEvent>
+#include <QMouseEvent>
+#include <QContextMenuEvent>
+#include <QTimer>
+#include <QAction>
+#include <QMenu>
+#include <QClipboard>
+#include <QScrollBar>
+#include <QLineEdit>
+#include <QToolTip>
+#include <QElapsedTimer>
+#include <QSettings>
+
+#include "layout/freetype_metrics.hpp"
+#include "layout/layout_engine.hpp"
+#include "editor/editor_controller.hpp"
+#include "render/renderer.hpp"
+#include "io/exporter.hpp"
+#include "io/text_exporter.hpp"
+#include "io/importer.hpp"
+#include "io/pdf_exporter.hpp"
+#include "ui/design_tokens.hpp"
+#include "ui/theme_palette.hpp"
+#include "ui/theme_manager.hpp"
+#include "ui/app_palette.hpp"
+#include "ui/screenplay_font.hpp"
+#include "ui/toast.hpp"
+#include "ui/script_language_dialog.hpp"
+#include "ui/autocomplete_popup.hpp"
+#include "ui/search_bar.hpp"
+#include "editor/script_search.hpp"
+#include "editor/spell_cache.hpp"
+#include "production/scene_numbering.hpp"
+#include "reports/script_reports.hpp"
+#include "ui/cover_editor.hpp"
+#include "ui/scroll_animator.hpp"
+#include "ui/page_metrics.hpp"
+#include "ui/typography.hpp"
+#include "ui/icon_manager.hpp"
+#include "ui/elevation.hpp"
+#include "ui/controls.hpp"
+#include "config/ui_strings.hpp"
+#include "config/app_config.hpp"
+#include "stats/script_stats.hpp"
+#include "stats/scene_character_index.hpp"
+#include "spellcheck/spell_checker.hpp"
+#include "database/script_index.hpp"
+#include "config/language.hpp"
+#include "version.hpp"
+
+#include <memory>
+#include <algorithm>
+#include <stdexcept>
+
+// Unqualified shorthands the moved code relies on (same as main.cpp).
+using screenplay::config::tr_ui;
+using screenplay::config::tr_block_label;
+using screenplay::ui::block_color;
+using screenplay::ui::contrast_text;
+using screenplay::ui::Toast;
+using screenplay::ui::ScriptLanguageDialog;
+using screenplay::ui::AutocompletePopup;
+using screenplay::ui::SearchBar;
+
+struct StyledFont {
+    QFont         font;
+    QFontMetricsF metrics{ QFont() };
+};
+
+// The eight bold/italic/underline variants of the page font, built once.
+//
+// Building a QFontMetricsF costs a font-engine lookup, and the paint loop was
+// doing it per visible line — thousands of times a second while scrolling.
+// The variants are fixed and few, so they are made once per repaint and picked
+// by their three flags.
+class StyledFontSet {
+public:
+    explicit StyledFontSet(const QFont& base) {
+        for (int i = 0; i < 8; ++i) {
+            QFont font = base;
+            font.setBold(i & kBold);
+            font.setItalic(i & kItalic);
+            font.setUnderline(i & kUnderline);
+            variants_[i] = StyledFont{ font, QFontMetricsF(font) };
+        }
+    }
+
+    const StyledFont& pick(bool bold, bool italic, bool underline) const {
+        return variants_[(bold ? kBold : 0) | (italic ? kItalic : 0)
+                       | (underline ? kUnderline : 0)];
+    }
+
+private:
+    static constexpr int kBold = 1, kItalic = 2, kUnderline = 4;
+    StyledFont variants_[8];
+};
+
+static void draw_page_shadow(QPainter& painter, const QRectF& page_rect) {
+    constexpr int   kLayers = 3;
+    constexpr float kSpread = 4.f;    // total outward spread, in px
+    constexpr int   kAlpha  = 10;     // peak alpha — barely perceptible
+
+    for (int i = kLayers; i >= 1; --i) {
+        const float t      = (float)i / kLayers;
+        const float spread = kSpread * t;
+        QColor c(MD3::PageShadow);
+        c.setAlpha(std::max(1, (int)(kAlpha * (1.f - t))));
+        painter.fillRect(page_rect.adjusted(-spread, -spread, spread, spread), c);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Icon drawing has moved to screenplay::ui::IconManager (ui/icon_manager.hpp)
+// per the project's extraction rule. `icons::` stays as a thin compatibility
+// alias so the dozens of existing `icons::make(icons::Id::…)` call sites below
+// keep compiling unchanged; `Id` gains Bold/Italic/Underline and the four
+// BlockScene/Action/Character/Dialogue glyphs for the new toolbar groups.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace icons {
+    using Id = screenplay::ui::IconManager::Id;
+    inline QIcon make(Id id, const QColor& color = MD3::Secondary) {
+        return screenplay::ui::IconManager::make(id, color);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Application-wide palette + stylesheet — now generated by
+// screenplay::ui::ThemeManager::apply_to_app() from DesignTokens + the active
+// ThemePalette. Call screenplay::ui::ThemeManager::instance().set_theme(...)
+// (or load_and_apply() at startup) instead of a free function here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Qt render target
+// ─────────────────────────────────────────────────────────────────────────────
+// Title page editor dialog
+// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Autocomplete popup widget
+// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Canvas
+// ─────────────────────────────────────────────────────────────────────────────
+class ScreenplayCanvas : public QWidget {
+    Q_OBJECT
+public:
+    explicit ScreenplayCanvas(QWidget* parent = nullptr) : QWidget(parent) {
+        setFocusPolicy(Qt::StrongFocus);
+        setAttribute(Qt::WA_OpaquePaintEvent);
+        setMouseTracking(false);   // only need move events while button held
+
+        popup_ = new AutocompletePopup(window());
+        connect(popup_, &AutocompletePopup::item_clicked, this, [this](int index){
+            ctrl_.set_suggestion_idx(index);
+            ctrl_.accept_suggestion();
+            ctrl_.dismiss_suggestions();
+            just_accepted_ = true;
+            popup_->hide_popup();
+            request_relayout();
+            emit script_changed();
+        });
+
+        // Thin overlay scrollbar (document position indicator + dragging)
+        vscroll_ = new QScrollBar(Qt::Vertical, this);
+        style_scrollbar();
+        connect(vscroll_, &QScrollBar::valueChanged, this, [this](int v){
+            if (syncing_scrollbar_) return;
+            scroll_.jump_to((float)v);   // a drag wins over any animation
+        });
+
+        // Auto-scroll while drag-selecting past the viewport's top/bottom
+        // edge (Word/VS Code behaviour). A repeating timer, not just logic
+        // inside mouseMoveEvent, because Qt stops delivering move events the
+        // instant the mouse stops moving even while still held past the edge
+        // — the scroll (and selection growth) must keep going regardless.
+        autoscroll_timer_.setTimerType(Qt::PreciseTimer);
+        autoscroll_timer_.setInterval(16);
+        connect(&autoscroll_timer_, &QTimer::timeout, this, [this]{
+            do_autoscroll_tick();
+        });
+
+        // Search bar (hidden by default, shown on Ctrl+F)
+        search_bar_ = new SearchBar(this);
+        search_bar_->hide();
+        search_bar_->edit()->installEventFilter(this);
+        connect(search_bar_, &SearchBar::query_changed, this, [this](const QString& q){
+            rebuild_search(q);
+            update();
+        });
+        connect(search_bar_, &SearchBar::next_requested, this, [this]{ advance_match(+1); });
+        connect(search_bar_, &SearchBar::prev_requested, this, [this]{ advance_match(-1); });
+        connect(search_bar_, &SearchBar::close_requested, this, [this]{ close_search(); });
+
+        relayout_timer_.setSingleShot(true);
+        relayout_timer_.setInterval(16);
+        connect(&relayout_timer_, &QTimer::timeout, this, [this]{
+            pages_ = engine_.layout(ctrl_.state().script);
+            recompute_char_highlight();   // block indices may have shifted
+            if (pending_follow_cursor_) {
+                pending_follow_cursor_ = false;
+                ensure_cursor_visible();
+            }
+            // Relayout runs for typing AND for zoom / resize / passive refreshes.
+            // Only the typing case may OPEN SmartType; the rest just re-place a
+            // popup that is already showing. (just_accepted_ guard lives inside
+            // update_popup().)
+            if (pending_popup_open_) {
+                pending_popup_open_ = false;
+                update_popup();
+            } else {
+                reposition_popup();
+            }
+            spell_timer_.start(1200);
+            update();
+        });
+
+        blink_timer_.setInterval(530);
+        connect(&blink_timer_, &QTimer::timeout, this, [this]{
+            blink_on_ = !blink_on_; update();
+        });
+        blink_timer_.start();
+
+        autosave_timer_.setInterval(120000);
+        connect(&autosave_timer_, &QTimer::timeout,
+                this, &ScreenplayCanvas::autosave_requested);
+        autosave_timer_.start();
+
+        spell_timer_.setSingleShot(true);
+        connect(&spell_timer_, &QTimer::timeout, this, [this]{
+            // The check itself runs on the worker's thread, so this tick only
+            // hands over a priority list and picks up finished results — it
+            // costs microseconds, and the interval is about how soon a
+            // squiggle appears, not about keeping the UI alive.
+            const auto visible = visible_block_range();
+            if (spell_.update(ctrl_.state().script, visible.first, visible.second))
+                spell_timer_.start(kSpellPollMs);
+            update();
+        });
+
+        click_timer_.setSingleShot(true);
+        connect(&click_timer_, &QTimer::timeout, this, [this]{ click_count_ = 0; });
+
+        // Restore persisted view preferences.
+        {
+            QSettings qs;
+            int snm = qs.value("view/scene_numbers",
+                               (int)SceneNumMode::Both).toInt();
+            if (snm >= (int)SceneNumMode::None && snm <= (int)SceneNumMode::Both)
+                scene_num_mode_ = (SceneNumMode)snm;
+            bold_scene_headings_ = qs.value("view/bold_scene_headings", false).toBool();
+        }
+
+        // Initialize spell checker with stored language preferences.
+        {
+            QSettings qs;
+            QStringList stored = qs.value("spell_languages").toStringList();
+            if (!stored.isEmpty()) {
+                std::vector<std::string> vtags;
+                for (const auto& l : stored) vtags.push_back(l.toStdString());
+                spell_.set_languages(vtags);
+            }
+            // If no preference stored yet the default (en-US) from the
+            // SpellChecker constructor is used; the language dialog fires
+            // from MainWindow on first run.
+        }
+
+        // Restore the persisted layout profile (Letter vs A4).
+        {
+            using Prof = screenplay::layout::LayoutProfile;
+            int p = QSettings().value("layout/profile",
+                                      (int)Prof::USLetter).toInt();
+            if (p == (int)Prof::InternationalA4)
+                engine_.set_profile(Prof::InternationalA4);
+        }
+        hold_page_width();   // before any dock can claim the width
+
+        pages_ = engine_.layout(ctrl_.state().script);
+    }
+
+    void zoom_reset() { set_zoom(1.f); }
+    void zoom_in()    { set_zoom(zoom_ + .1f); }
+    void zoom_out()   { set_zoom(zoom_ - .1f); }
+    void set_zoom(float z) {
+        zoom_ = std::clamp(z, .3f, 3.f);
+        hold_page_width();
+        emit zoom_changed(zoom_);
+        relayout_timer_.start();
+    }
+    float zoom() const { return zoom_; }
+
+    /// Reserves room for a whole sheet, so nothing can take the page away.
+    ///
+    /// A dock is a sibling of the canvas, and dragging its splitter shrinks
+    /// whatever is next to it: the sheet is centred in the canvas, so the panel
+    /// did not overlap the page — it squeezed the canvas until the page was
+    /// clipped, which looks the same and is just as wrong. A minimum width
+    /// makes the layout refuse the drag instead.
+    void hold_page_width() {
+        const float dpi = (float)logicalDpiX() / 72.f;
+        const int sheet = (int)std::ceil(engine_.geometry().page_w * dpi * zoom_);
+        setMinimumWidth(sheet + kPageAirPx * 2);
+    }
+
+    // follow_cursor: after the relayout, scroll so the caret stays in view
+    // (used by keyboard edits/navigation, never by zoom or passive refreshes).
+    void request_relayout(bool follow_cursor = false) {
+        if (follow_cursor) pending_follow_cursor_ = true;
+        relayout_timer_.start();
+    }
+    const screenplay::layout::PageList& pages() const { return pages_; }
+    const screenplay::ui::ScrollAnimator& scroll_animator() const { return scroll_; }
+
+    /// One wheel notch, exactly as wheelEvent applies it. Shared so the
+    /// diagnostic drives the same path the mouse does rather than a copy of it.
+    void scroll_by_notch(int direction) {
+        scroll_.animate_to(scroll_.destination()
+                           - (float)direction * kWheelNotchPx);
+    }
+
+    /// The first and last block with a line on screen right now.
+    ///
+    /// The spell checker uses this to work on what the reader can actually
+    /// see. Derived from the laid-out pages rather than from the scroll
+    /// position so it stays correct at any zoom and page size.
+    std::pair<size_t, size_t> visible_block_range() const {
+        const auto metrics = page_metrics();
+        size_t first = SIZE_MAX, last = 0;
+        for (size_t p = 0; p < pages_.size(); ++p) {
+            const float top = metrics.page_top(p);
+            if (top + metrics.page_height() < 0) continue;   // above the fold
+            if (top > (float)height()) break;                // below it
+            for (const auto& line : pages_[p].lines) {
+                if (line.is_more || line.is_contd) continue;
+                const float y = metrics.line_top(p, line);
+                if (y + metrics.line_height(line) < 0) continue;
+                if (y > (float)height()) break;
+                first = std::min(first, line.block_idx);
+                last  = std::max(last,  line.block_idx);
+            }
+        }
+        return first == SIZE_MAX ? std::pair<size_t, size_t>{ 0, 0 }
+                                 : std::pair<size_t, size_t>{ first, last };
+    }
+    const screenplay::layout::PageGeometry& page_geometry() const { return engine_.geometry(); }
+    float pt_size() const { return engine_.pt_size(); }
+
+    // Active layout profile (Letter vs A4). Switching re-paginates without
+    // touching the script content.
+    screenplay::layout::LayoutProfile profile() const { return engine_.profile(); }
+    void set_profile(screenplay::layout::LayoutProfile p) {
+        if (engine_.profile() == p) return;
+        engine_.set_profile(p);
+        hold_page_width();      // A4 and Letter are not the same width
+        QSettings().setValue("layout/profile", (int)p);
+        pages_ = engine_.layout(ctrl_.state().script);
+        scroll_.clamp_to_bounds();
+        update();   // paintEvent re-syncs the overlay scrollbar range
+    }
+
+    /// How much of the page to leave above a line that was scrolled to, so it
+    /// does not land flush against the top edge.
+    static constexpr float kRevealMarginPx = 60.f;
+
+    // Where every page currently sits on screen. Cheap to build, so it is
+    // rebuilt on demand rather than cached and kept in sync by hand.
+    screenplay::ui::PageMetrics page_metrics() const {
+        return { engine_.geometry(),
+                 { (float)width(), (float)height(),
+                   (float)logicalDpiX() / 72.f, zoom_, scroll_.position() },
+                 ctrl_.state().script.title_page.enabled };
+    }
+
+    /// Brings the page's top edge to the top margin.
+    void scroll_to_page(int page_num) {
+        if (pages_.empty()) return;
+        const auto metrics = page_metrics();
+        scroll_.animate_to(metrics.document_page_top((size_t)(page_num - 1))
+                           - metrics.gap());
+    }
+
+    void scroll_to_block(size_t block_idx) {
+        const auto metrics = page_metrics();
+        const auto line = metrics.find_line(pages_, [&](const auto& vl) {
+            return vl.block_idx == block_idx;
+        });
+        if (!line) return;
+        // find_line reports viewport coordinates; the animator wants a
+        // document position.
+        scroll_.animate_to(line->top + scroll_.position() - kRevealMarginPx);
+    }
+
+    // Plain Up/Down moves one VISUAL LINE (Ctrl+Up/Down still moves one
+    // BLOCK, via the existing EditorController path) — needs the wrapped
+    // layout, which only this class has, so it can't live in the Qt-free
+    // EditorController. Lands on the horizontal (pixel) position closest to
+    // the caret's current column, same convention as a normal text editor.
+    // Returns false (caller falls back to block movement) if there is no
+    // layout yet or no adjacent line.
+    bool move_cursor_visual_line(int dir, bool extend) {
+        if (pages_.empty()) return false;
+        const auto& st = ctrl_.state();
+        if (st.script.blocks.empty()) return false;
+
+        // Flatten editable (non-synthetic) visual lines across all pages, in
+        // document order, and find the one the caret is on.
+        std::vector<const screenplay::layout::VisualLine*> flat;
+        int cur_idx = -1;
+        for (const auto& page : pages_) {
+            for (const auto& vl : page.lines) {
+                if (vl.is_more || vl.is_contd) continue;
+                flat.push_back(&vl);
+                if (vl.block_idx == st.cursor.block_idx) {
+                    const size_t block_text_size =
+                        st.script.blocks[vl.block_idx].text.size();
+                    const bool is_last = (vl.end_offset >= block_text_size);
+                    const bool cursor_here =
+                        (st.cursor.byte_offset >= vl.start_offset) &&
+                        (is_last ? st.cursor.byte_offset <= vl.end_offset
+                                 : st.cursor.byte_offset <  vl.end_offset);
+                    if (cursor_here) cur_idx = (int)flat.size() - 1;
+                }
+            }
+        }
+        if (cur_idx < 0) return false;
+
+        const int target_idx = cur_idx + dir;
+        if (target_idx < 0 || target_idx >= (int)flat.size())
+            return false;   // top/bottom of the document — nothing to do
+
+        const auto& cur_vl = *flat[cur_idx];
+        const auto& tgt_vl = *flat[target_idx];
+
+        QFont f; f.setFamily(screenplay::ui::ScreenplayFont::family());
+        f.setPixelSize(qRound(engine_.pt_size()));
+        f.setStyleHint(QFont::TypeWriter);
+        screenplay::ui::ScreenplayFont::apply_render_quality(f);
+        QFontMetricsF fm(f);
+
+        const size_t cursor_in_line = std::min(
+            st.cursor.byte_offset - cur_vl.start_offset,
+            cur_vl.display_text.size());
+        const float target_x = fm.horizontalAdvance(QString::fromStdString(
+            cur_vl.display_text.substr(0, cursor_in_line)));
+
+        // Walk the target line codepoint by codepoint, keeping the offset
+        // whose rendered width lands closest to target_x.
+        const std::string& disp = tgt_vl.display_text;
+        size_t best_off  = 0;
+        float  best_dist = target_x;   // distance from width-0 (line start)
+        for (size_t i = 0; i < disp.size(); ) {
+            size_t next = screenplay::utf8::next_cp(disp, i);
+            float w = fm.horizontalAdvance(
+                QString::fromStdString(disp.substr(0, next)));
+            float d = std::abs(w - target_x);
+            if (d < best_dist) { best_dist = d; best_off = next; }
+            i = next;
+        }
+
+        ctrl_.move_cursor_to(
+            { tgt_vl.block_idx, tgt_vl.start_offset + best_off }, extend);
+        return true;
+    }
+
+    enum class SceneNumMode { None, Left, Right, Both };
+    void set_scene_num_mode(SceneNumMode m) {
+        scene_num_mode_ = m;
+        QSettings().setValue("view/scene_numbers", (int)m);
+    }
+    SceneNumMode scene_num_mode() const { return scene_num_mode_; }
+    screenplay::editor::EditorController& ctrl() { return ctrl_; }
+    bool spell_available() const { return spell_.available(); }
+
+    void show_search() { open_search(); }
+
+    // Re-apply theme-dependent styling after MD3::apply() flipped the tokens.
+    void apply_theme_refresh() {
+        style_scrollbar();
+        if (search_bar_) search_bar_->restyle();
+        reposition_popup();
+        update();
+    }
+
+    // ── Character dialogue highlight ──────────────────────────────────────
+    // Toggle: highlighting the already-active character clears it.
+    void set_character_highlight(const std::string& raw_name) {
+        const std::string norm = QString::fromStdString(raw_name)
+                                     .trimmed().toUpper().toStdString();
+        highlight_character_ = (norm == highlight_character_) ? "" : norm;
+        recompute_char_highlight();
+        update();
+    }
+    const std::string& highlighted_character() const { return highlight_character_; }
+
+    // 1-based page number containing the cursor block (0 when layout empty).
+    int cursor_page() const {
+        const auto& st = ctrl_.state();
+        for (const auto& page : pages_)
+            for (const auto& vl : page.lines)
+                if (!vl.is_more && !vl.is_contd &&
+                        vl.block_idx == st.cursor.block_idx)
+                    return page.number;
+        return pages_.empty() ? 0 : 1;
+    }
+
+    // Reinitialize spell checker with a new set of language tags.
+    // Called when the user changes language preferences.
+    void reinit_spell(const std::vector<std::string>& lang_tags) {
+        spell_.set_languages(lang_tags);
+        spell_timer_.start(500);
+    }
+
+    void toggle_bold() {
+        ctrl_.toggle_bold();
+        request_relayout(); emit script_changed();
+    }
+    void toggle_italic() {
+        ctrl_.toggle_italic();
+        request_relayout(); emit script_changed();
+    }
+    void toggle_underline() {
+        ctrl_.toggle_underline();
+        request_relayout(); emit script_changed();
+    }
+    // Alignment override for the current block. Silently ignored for types
+    // that don't accept one, so a stale shortcut can never corrupt the format.
+    void set_block_align(screenplay::BlockAlign a) {
+        if (!screenplay::supports_alignment(ctrl_.current_block_type())) return;
+        ctrl_.set_block_align(a);
+        request_relayout(); emit script_changed();
+    }
+    void set_bold_scene_headings(bool v) {
+        bold_scene_headings_ = v;
+        QSettings().setValue("view/bold_scene_headings", v);
+        request_relayout();
+    }
+    bool bold_scene_headings() const { return bold_scene_headings_; }
+
+signals:
+    void script_changed();
+    void autosave_requested();
+    void zoom_changed(float z);
+    // Emitted when Escape reaches the editor with nothing left to dismiss
+    // (no popup, no character highlight) — MainWindow uses it to leave
+    // Focus Mode / full screen.
+    void escape_pressed();
+
+protected:
+    bool focusNextPrevChild(bool) override { return false; }
+
+    void paintEvent(QPaintEvent*) override {
+        // Timed so the scroll animation can pace itself to what this canvas
+        // can actually repaint, not just to what the monitor can show.
+        QElapsedTimer frame;
+        frame.start();
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing,          true);
+        painter.setRenderHint(QPainter::TextAntialiasing,      true);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+        // Dark canvas background
+        painter.fillRect(rect(), MD3::Canvas);
+
+        const float dpi = (float)logicalDpiX() / 72.f;
+
+        const auto& st = ctrl_.state();
+        screenplay::render::RenderConfig cfg;
+        cfg.zoom                = zoom_;
+        cfg.scroll_y_px         = scroll_.position();
+        cfg.canvas_w_px         = width();
+        cfg.canvas_h_px         = height();
+        cfg.cursor              = st.cursor;
+        cfg.show_cursor         = blink_on_ && hasFocus();
+        cfg.suggestions         = {};    // drawn by popup widget instead
+        cfg.suggestion_selected = -1;
+        cfg.page_gap_px         = screenplay::ui::PageMetrics::kGapPx;
+
+        // Override renderer clear — canvas already filled
+        // We'll call render but tell it not to clear
+        render_pages(painter, dpi, cfg);
+
+        // Block type indicator strip (left edge)
+        draw_type_strip(painter, st);
+
+        // Keep an open cover editor glued to the field it is editing. The
+        // editor is a child widget at fixed window coordinates, so without
+        // this it would hang in place while the page scrolled underneath —
+        // render_pages just rebuilt the field rects, so the current on-screen
+        // position is available right here.
+        cover_.sync_geometry();
+
+        // Keep the overlay scrollbar in sync with the computed document size
+        if (vscroll_) {
+            syncing_scrollbar_ = true;
+            const int max = (int)max_scroll_y();
+            vscroll_->setRange(0, max);
+            vscroll_->setPageStep(height());
+            vscroll_->setSingleStep(48);
+            vscroll_->setValue((int)scroll_.position());
+            vscroll_->setVisible(max > 0);
+            syncing_scrollbar_ = false;
+        }
+
+        scroll_.note_paint_cost(frame.elapsed());
+    }
+
+    void keyPressEvent(QKeyEvent* ev) override {
+        // Escape abandons an in-place cover edit without writing it.
+        if (cover_.editing() && ev->key() == Qt::Key_Escape) {
+            cover_.cancel();
+            return;
+        }
+        using K  = screenplay::editor::Key;
+        using BT = screenplay::BlockType;
+
+        // The controller decides what some keys mean based on whether the
+        // SmartType list is actually on screen (Tab, above all). It cannot see
+        // the popup, so tell it the truth here — one choke point that runs
+        // before any key is interpreted.
+        ctrl_.set_suggestions_visible(popup_->is_visible());
+
+        const bool ctrl  = ev->modifiers() & Qt::ControlModifier;
+        const bool shift = ev->modifiers() & Qt::ShiftModifier;
+
+        // Ctrl+1-6 — layout-independent block type switching.
+        //
+        // ev->key() returns the UNSHIFTED symbol for the physical key, which on
+        // non-QWERTY layouts may not be Qt::Key_1..Key_6.  We therefore try two
+        // methods and take the first that matches:
+        //
+        //   1. Virtual key:  ev->key() ∈ [Key_1, Key_6]  (works on QWERTY / ABNT2)
+        //   2. Scan code:    Windows number-row scan codes 2-7 are layout-independent
+        //                    (scan 2 = physical "1" key, … scan 7 = physical "6" key)
+        //
+        // The Shift guard is intentionally removed so that layouts where digits
+        // require Shift (e.g. AZERTY Ctrl+Shift+6) still fire the shortcut.
+        if (ctrl) {
+            static const BT types[] = {
+                BT::SceneHeading, BT::Action, BT::Character,
+                BT::Parenthetical, BT::Dialogue, BT::Transition
+            };
+
+            // Method 1: virtual key (preferred, works on most layouts)
+            int idx = ev->key() - Qt::Key_1;
+
+            // Method 2: native scan code fallback (Windows, layout-independent)
+            // Scan code 2 → "1" key, 3 → "2", …, 7 → "6"
+            if (idx < 0 || idx > 5) {
+                int sc = static_cast<int>(ev->nativeScanCode());
+                if (sc >= 2 && sc <= 7) idx = sc - 2;
+            }
+
+            if (idx >= 0 && idx <= 5) {
+                if (popup_->is_visible()) {
+                    ctrl_.set_suggestion_idx(idx);
+                    ctrl_.accept_suggestion();
+                    request_relayout(); popup_->hide_popup(); emit script_changed();
+                    return;
+                }
+                // Ctrl+4 builds a Parenthetical with its structural "()" in one
+                // atomic step (document logic lives in the controller, not here).
+                if (types[idx] == BT::Parenthetical)
+                    ctrl_.make_parenthetical();
+                else
+                    ctrl_.set_block_type(types[idx]);
+                request_relayout(); emit script_changed(); return;
+            }
+        }
+
+        // Ctrl+A: select the whole script. Ctrl+Shift+A: select only the
+        // current block (e.g. just the Dialogue the caret is in).
+        if (ctrl && ev->key() == Qt::Key_A) {
+            if (shift) ctrl_.select_current_block();
+            else       ctrl_.select_all();
+            popup_->hide_popup(); update(); return;
+        }
+
+        // Ctrl+F — open search
+        if (ctrl && ev->key() == Qt::Key_F) {
+            open_search(); return;
+        }
+
+        // Ctrl+C — copy
+        if (ctrl && !shift && ev->key() == Qt::Key_C) {
+            if (ctrl_.state().has_selection)
+                QApplication::clipboard()->setText(
+                    QString::fromStdString(ctrl_.copy_selection()));
+            return;
+        }
+
+        // Ctrl+X — cut
+        if (ctrl && !shift && ev->key() == Qt::Key_X) {
+            if (ctrl_.state().has_selection) {
+                QApplication::clipboard()->setText(
+                    QString::fromStdString(ctrl_.copy_selection()));
+                ctrl_.cut_selection();
+                request_relayout(true); emit script_changed();
+            }
+            return;
+        }
+
+        // Ctrl+V — paste
+        if (ctrl && !shift && ev->key() == Qt::Key_V) {
+            std::string txt = QApplication::clipboard()->text().toStdString();
+            if (!txt.empty()) { ctrl_.paste(txt); request_relayout(true); emit script_changed(); }
+            return;
+        }
+
+        // Ctrl+B — bold toggle
+        if (ctrl && !shift && ev->key() == Qt::Key_B) {
+            ctrl_.toggle_bold();
+            request_relayout(); emit script_changed(); return;
+        }
+
+        // Ctrl+I — italic toggle
+        if (ctrl && !shift && ev->key() == Qt::Key_I) {
+            ctrl_.toggle_italic();
+            request_relayout(); emit script_changed(); return;
+        }
+
+        // Ctrl+U — underline toggle
+        if (ctrl && !shift && ev->key() == Qt::Key_U) {
+            ctrl_.toggle_underline();
+            request_relayout(); emit script_changed(); return;
+        }
+
+        // Ctrl+D — dual dialogue
+        if (ctrl && !shift && ev->key() == Qt::Key_D) {
+            ctrl_.activate_dual_dialogue();
+            request_relayout(); emit script_changed(); return;
+        }
+
+        // Ctrl+Left / Ctrl+Right (±word movement; Shift extends selection)
+        if (ctrl && ev->key() == Qt::Key_Left) {
+            if (shift) ctrl_.extend_selection_word(-1);
+            else       ctrl_.move_word(-1);
+            update(); return;
+        }
+        if (ctrl && ev->key() == Qt::Key_Right) {
+            if (shift) ctrl_.extend_selection_word(+1);
+            else       ctrl_.move_word(+1);
+            update(); return;
+        }
+
+        // Ctrl+Backspace / Ctrl+Delete — delete word
+        if (ctrl && ev->key() == Qt::Key_Backspace) {
+            ctrl_.delete_word(-1); request_relayout(true); emit script_changed(); return;
+        }
+        if (ctrl && ev->key() == Qt::Key_Delete) {
+            ctrl_.delete_word(+1); request_relayout(true); emit script_changed(); return;
+        }
+
+        // Ctrl+Home / Ctrl+End — document start/end
+        if (ctrl && ev->key() == Qt::Key_Home) {
+            ctrl_.cursor_to_start(); ensure_cursor_visible(); update(); return;
+        }
+        if (ctrl && ev->key() == Qt::Key_End) {
+            ctrl_.cursor_to_end(); ensure_cursor_visible(); update(); return;
+        }
+
+        // ── Autocomplete navigation & acceptance ──────────────────────────
+        const bool popup_open = popup_->is_visible();
+
+        if (popup_open && !ctrl) {
+            // Down/Up navigate suggestions
+            if (ev->key() == Qt::Key_Down) {
+                ctrl_.next_suggestion();
+                popup_->update_selection(ctrl_.state().suggestion_idx);
+                update();
+                return;
+            }
+            if (ev->key() == Qt::Key_Up) {
+                ctrl_.prev_suggestion();
+                popup_->update_selection(ctrl_.state().suggestion_idx);
+                update();
+                return;
+            }
+            // Escape closes popup without accepting
+            if (ev->key() == Qt::Key_Escape) {
+                ctrl_.dismiss_suggestions();
+                popup_->hide_popup();
+                return;
+            }
+            // Enter accepts ONLY when popup is open
+            if (ev->key() == Qt::Key_Return || ev->key() == Qt::Key_Enter) {
+                ctrl_.accept_suggestion();
+                ctrl_.dismiss_suggestions();
+                just_accepted_ = true;
+                popup_->hide_popup();
+                request_relayout();
+                emit script_changed();
+                return;
+            }
+        }
+
+        // Enter on suggestion-capable blocks (popup not yet open): show SmartType
+        if (!ctrl && !shift
+                && (ev->key() == Qt::Key_Return || ev->key() == Qt::Key_Enter)
+                && !popup_->is_visible()) {
+            const auto& st2 = ctrl_.state();
+            if (!st2.script.blocks.empty()
+                    && st2.cursor.block_idx < st2.script.blocks.size()) {
+                using BT2 = screenplay::BlockType;
+                const auto& cb2 = st2.script.blocks[st2.cursor.block_idx];
+                const bool has_smart = (cb2.type == BT2::SceneHeading
+                                     || cb2.type == BT2::Character
+                                     || cb2.type == BT2::Parenthetical);
+                const bool at_start = (st2.cursor.byte_offset == 0);
+                bool at_time_of_day = false;
+                if (cb2.type == BT2::SceneHeading) {
+                    std::string up = cb2.text.substr(0, st2.cursor.byte_offset);
+                    std::transform(up.begin(), up.end(), up.begin(), ::toupper);
+                    at_time_of_day = (up.size() >= 3 &&
+                                      up.rfind(" - ") == up.size() - 3);
+                }
+                if (has_smart && (at_start || at_time_of_day)) {
+                    ctrl_.update_autocomplete_public();
+                    update_popup();
+                    update();
+                    return;
+                }
+            }
+        }
+
+        // ── Tab ───────────────────────────────────────────────────────────
+        // With the SmartType list on screen, Tab takes the highlighted entry —
+        // the first one unless Up/Down moved the selection. With no list on
+        // screen, Tab falls through to the block-type cycle below.
+        //
+        // "On screen" is the whole point of the check. The old rule accepted
+        // whenever suggestions merely EXISTED, and a Transition is seeded the
+        // instant the caret arrives, so Tab in an empty Transition silently
+        // typed "CUT TO:" instead of moving to the next element.
+        if (!ctrl && !shift && ev->key() == Qt::Key_Tab
+                && popup_->is_visible()
+                && !ctrl_.state().suggestions.empty()) {
+            ctrl_.accept_suggestion();
+            ctrl_.dismiss_suggestions();
+            just_accepted_ = true;
+            popup_->hide_popup();
+            setFocus();
+            request_relayout();
+            emit script_changed();
+            return;
+        }
+
+        // Plain Up/Down: one visual line (needs the wrap layout, so it's
+        // handled here rather than in the Qt-free EditorController). The
+        // popup-navigation branch above already returns when the SmartType
+        // list is open, so Up/Down only reach here when there's no popup to
+        // navigate. Ctrl+Up/Down keeps moving one block (below).
+        if (!ctrl && (ev->key() == Qt::Key_Up || ev->key() == Qt::Key_Down)) {
+            const int dir = (ev->key() == Qt::Key_Down) ? +1 : -1;
+            if (move_cursor_visual_line(dir, shift)) {
+                request_relayout(true);
+                emit script_changed();
+                return;
+            }
+            // No layout yet / at the document's edge — fall back to the
+            // block-level move below instead of doing nothing.
+        }
+
+        screenplay::editor::KeyEvent ke;
+        ke.ctrl = ctrl; ke.shift = shift;
+
+        if (ctrl) {
+            switch (ev->key()) {
+            case Qt::Key_Z:  ke.key = shift ? K::Redo : K::Undo; break;
+            case Qt::Key_Y:  ke.key = K::Redo; break;
+            case Qt::Key_Up:   ke.key = K::Up;   break;   // Ctrl+Up/Down: by block
+            case Qt::Key_Down: ke.key = K::Down; break;
+            // Ctrl+S is handled by the MainWindow QShortcut/menu — let it propagate.
+            default: QWidget::keyPressEvent(ev); return;
+            }
+        } else {
+            switch (ev->key()) {
+            case Qt::Key_Return:
+            case Qt::Key_Enter:     ke.key = K::Enter;     break;
+            case Qt::Key_Tab:       ke.key = shift ? K::BackTab : K::Tab; break;
+            case Qt::Key_Backtab:   ke.key = K::BackTab;   break;
+            case Qt::Key_Backspace: ke.key = K::Backspace; break;
+            case Qt::Key_Delete:    ke.key = K::Delete;    break;
+            case Qt::Key_Left:      ke.key = K::Left;      break;
+            case Qt::Key_Right:     ke.key = K::Right;     break;
+            case Qt::Key_Up:        ke.key = K::Up;        break;
+            case Qt::Key_Down:      ke.key = K::Down;      break;
+            case Qt::Key_Home:      ke.key = K::Home;      break;
+            case Qt::Key_End:       ke.key = K::End;       break;
+            case Qt::Key_Escape:
+                // Escape with no popup: clear character highlight first;
+                // otherwise let MainWindow leave Focus Mode / full screen
+                // (falls through to the normal editor escape either way).
+                if (!highlight_character_.empty()) {
+                    set_character_highlight(highlight_character_); // toggle off
+                    return;
+                }
+                emit escape_pressed();
+                ke.key = K::Escape;
+                break;
+            default:
+                if (!ev->text().isEmpty()) {
+                    ke.key       = K::Char;
+                    ke.char_utf8 = ev->text().toUtf8().toStdString();
+                } else { QWidget::keyPressEvent(ev); return; }
+            }
+        }
+
+        ctrl_.handle_key(ke);
+        // Only real text mutation may open SmartType on the coming relayout —
+        // arrow/Home/End navigation must not pop the list open. (Enter has its
+        // own explicit open below; Tab accepts rather than opens.)
+        using K3 = screenplay::editor::Key;
+        if (ke.key == K3::Char || ke.key == K3::Backspace || ke.key == K3::Delete)
+            pending_popup_open_ = true;
+        request_relayout(true);
+        emit script_changed();
+        // Show autocomplete immediately after Enter creates a new block
+        if (ke.key == screenplay::editor::Key::Enter) {
+            QTimer::singleShot(20, this, [this]{
+                ctrl_.update_autocomplete_public();
+                update_popup();
+                update();
+            });
+        }
+    }
+
+    void wheelEvent(QWheelEvent* ev) override {
+        if (ev->modifiers() & Qt::ControlModifier) {
+            float d = ev->angleDelta().y() > 0 ? .1f : -.1f;
+            zoom_ = std::clamp(zoom_ + d, .3f, 3.f);
+            emit zoom_changed(zoom_);
+            relayout_timer_.start();
+        } else if (!ev->pixelDelta().isNull()) {
+            // High-resolution input (trackpad / precision mouse): the OS
+            // already reports smooth, sub-tick pixel deltas — track them
+            // directly, no easing. Animating on top of an already-continuous
+            // gesture would just add lag; direct 1:1 following is the
+            // smoothest possible response here.
+            scroll_.nudge(-(float)ev->pixelDelta().y());
+        } else {
+            // Discrete wheel notches: no continuous signal to track, so ease
+            // each tick into a settle animation. Chain ticks: retarget from
+            // the animation's end value so successive ticks accumulate
+            // instead of restarting.
+            scroll_by_notch(ev->angleDelta().y() / 120);
+        }
+    }
+
+    void contextMenuEvent(QContextMenuEvent* ev) override {
+        setFocus();
+        const screenplay::Cursor c = hit_test(QPointF(ev->pos()));
+
+        const auto& blocks = ctrl_.state().script.blocks;
+        if (blocks.empty() || c.block_idx >= blocks.size()) return;
+
+        QMenu menu(this);
+
+        // ── 1. Spell suggestions (if right-clicked word is misspelled) ───
+        if (spell_.available()) {
+            for (const auto& ms : spell_.misspellings(c.block_idx)) {
+                if (c.byte_offset >= ms.start &&
+                    c.byte_offset <  ms.start + ms.length) {
+
+                    // Show misspelled word at top (grayed out, bold)
+                    {
+                        const auto& bt2 = ctrl_.state().script.blocks[c.block_idx].text;
+                        std::string word2 = (ms.start + ms.length <= bt2.size())
+                            ? bt2.substr(ms.start, ms.length) : std::string{};
+                        if (!word2.empty()) {
+                            auto* word_act = menu.addAction(tr_ui("\"") + QString::fromStdString(word2) + "\"");
+                            word_act->setEnabled(false);
+                            QFont wf = word_act->font(); wf.setBold(true); word_act->setFont(wf);
+                            menu.addSeparator();
+                        }
+                    }
+
+                    // Fetched now, for this one word. The background pass no
+                    // longer collects replacements for text nobody asked
+                    // about — that was one extra COM call per flagged word.
+                    const auto& block_text =
+                        ctrl_.state().script.blocks[c.block_idx].text;
+                    const std::vector<std::string> suggestions =
+                        (ms.start + ms.length <= block_text.size())
+                            ? spell_.suggest(block_text.substr(ms.start, ms.length))
+                            : std::vector<std::string>{};
+
+                    if (suggestions.empty()) {
+                        menu.addAction(tr_ui("(No suggestions)"))->setEnabled(false);
+                    } else {
+                        for (const auto& sug : suggestions) {
+                            auto* act = menu.addAction(QString::fromStdString(sug));
+                            QFont bf = act->font(); bf.setBold(true); act->setFont(bf);
+                            connect(act, &QAction::triggered, this,
+                                [this, ms, sug, bi = c.block_idx] {
+                                    auto& txt = ctrl_.script_mut().blocks[bi].text;
+                                    if (ms.start + ms.length <= txt.size()) {
+                                        txt.replace(ms.start, ms.length, sug);
+                                        spell_.invalidate_block(bi);
+                                        request_relayout();
+                                        emit script_changed();
+                                    }
+                                });
+                        }
+                    }
+
+                    menu.addSeparator();
+                    {
+                        const auto& bt = ctrl_.state().script.blocks[c.block_idx].text;
+                        std::string word = (ms.start + ms.length <= bt.size())
+                            ? bt.substr(ms.start, ms.length) : std::string{};
+                        auto* act = menu.addAction(tr_ui("Add to dictionary"));
+                        connect(act, &QAction::triggered, this, [this, word] {
+                            if (!word.empty()) {
+                                spell_.add_to_dictionary(word);
+                                request_relayout();
+                            }
+                        });
+                    }
+
+                    menu.addSeparator();
+                    break;
+                }
+            }
+        }
+        // ── 2. Copiar / Recortar / Colar ─────────────────────────────────
+        auto* act_copy = menu.addAction(tr_ui("Copy"));
+        act_copy->setShortcut(QKeySequence::Copy);
+        act_copy->setEnabled(ctrl_.state().has_selection);
+        connect(act_copy, &QAction::triggered, this, [this] {
+            if (ctrl_.state().has_selection)
+                QApplication::clipboard()->setText(
+                    QString::fromStdString(ctrl_.copy_selection()));
+        });
+
+        auto* act_cut = menu.addAction(tr_ui("Cut"));
+        act_cut->setShortcut(QKeySequence::Cut);
+        act_cut->setEnabled(ctrl_.state().has_selection);
+        connect(act_cut, &QAction::triggered, this, [this] {
+            if (ctrl_.state().has_selection) {
+                QApplication::clipboard()->setText(
+                    QString::fromStdString(ctrl_.copy_selection()));
+                ctrl_.cut_selection();
+                request_relayout();
+                emit script_changed();
+            }
+        });
+
+        auto* act_paste = menu.addAction(tr_ui("Paste"));
+        act_paste->setShortcut(QKeySequence::Paste);
+        connect(act_paste, &QAction::triggered, this, [this] {
+            std::string txt = QApplication::clipboard()->text().toStdString();
+            if (!txt.empty()) {
+                ctrl_.paste(txt);
+                request_relayout();
+                emit script_changed();
+            }
+        });
+
+        menu.addSeparator();
+
+        // ── 3. Selecionar Tudo ────────────────────────────────────────────
+        auto* act_all = menu.addAction(tr_ui("Select All"));
+        act_all->setShortcut(QKeySequence::SelectAll);
+        connect(act_all, &QAction::triggered, this, [this] {
+            ctrl_.select_all();
+            popup_->hide_popup();
+            update();
+        });
+
+        menu.addSeparator();
+
+        // ── 4. Submenu "Format as" ───────────────────────────────────────
+        auto* fmt_sub = menu.addMenu(tr_ui("Format as"));
+        using BT = screenplay::BlockType;
+        struct FEntry { const char* label; BT type; };
+        static constexpr FEntry entries[] = {
+            { "Scene Heading",  BT::SceneHeading  },
+            { "Action",         BT::Action        },
+            { "Character",      BT::Character     },
+            { "Parenthetical",  BT::Parenthetical },
+            { "Dialogue",       BT::Dialogue      },
+            { "Transition",     BT::Transition    },
+        };
+        const BT cur_type = ctrl_.state().script.blocks[c.block_idx].type;
+        for (const auto& e : entries) {
+            auto* a = fmt_sub->addAction(QString::fromUtf8(e.label));
+            a->setCheckable(true);
+            a->setChecked(cur_type == e.type);
+            BT t = e.type;
+            connect(a, &QAction::triggered, this, [this, t] {
+                ctrl_.set_block_type(t);
+                request_relayout();
+                emit script_changed();
+            });
+        }
+
+        menu.exec(ev->globalPos());
+    }
+
+    void resizeEvent(QResizeEvent*) override {
+        if (search_bar_ && search_bar_->isVisible()) {
+            int sw = search_bar_->sizeHint().width();
+            search_bar_->move(width() - sw - 10, 10);
+        }
+        if (vscroll_) vscroll_->setGeometry(width() - 10, 0, 10, height());
+        update();
+    }
+    void mousePressEvent(QMouseEvent* ev) override {
+        // A click on the cover edits the cover, in place. Handled before the
+        // normal hit-test because the cover is not part of the block model —
+        // hit_test() would otherwise snap the caret into the script.
+        if (ev->button() == Qt::LeftButton
+                && cover_.begin_edit_at(ev->position()))
+            return;
+        if (cover_.editing()) cover_.commit();
+
+        setFocus();
+        if (ev->button() == Qt::LeftButton) {
+            screenplay::Cursor c = hit_test(ev->position());
+
+            if (!click_timer_.isActive()) click_count_ = 1;
+            else                          ++click_count_;
+            click_timer_.start(400);
+
+            if (click_count_ == 2) {
+                // Double-click: select word
+                const auto& text = ctrl_.state().script.blocks[c.block_idx].text;
+                const size_t len = text.size();
+                size_t ws = c.byte_offset;
+                while (ws > 0 && text[ws-1] != ' ' && text[ws-1] != '\n') --ws;
+                size_t we = c.byte_offset;
+                while (we < len && text[we] != ' ' && text[we] != '\n') ++we;
+                if (ws < we)
+                    ctrl_.set_selection({c.block_idx, ws}, {c.block_idx, we});
+                popup_->hide_popup();
+                update();
+                return;
+            } else if (click_count_ >= 3) {
+                // Triple-click: select entire block (paragraph)
+                click_count_ = 0;
+                const auto& text = ctrl_.state().script.blocks[c.block_idx].text;
+                ctrl_.set_selection(
+                    {c.block_idx, 0},
+                    {c.block_idx, text.size()});
+                popup_->hide_popup();
+                update();
+                return;
+            }
+
+            ctrl_.set_cursor_pos(c);
+            mouse_selecting_  = true;
+            mouse_anchor_     = c;
+            mouse_last_pos_   = ev->position();
+            autoscroll_speed_ = 0.f;
+            autoscroll_timer_.stop();
+            blink_on_        = true;
+            popup_->hide_popup();
+            update();
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent* ev) override {
+        if (mouse_selecting_ && (ev->buttons() & Qt::LeftButton)) {
+            mouse_last_pos_ = ev->position();
+            update_autoscroll(mouse_last_pos_);
+            screenplay::Cursor c = hit_test(clamp_to_viewport(mouse_last_pos_));
+            ctrl_.set_selection(mouse_anchor_, c);
+            if (ctrl_.state().has_selection) popup_->hide_popup();
+            update();
+        }
+    }
+
+    void mouseReleaseEvent(QMouseEvent* ev) override {
+        if (ev->button() == Qt::LeftButton) {
+            mouse_selecting_  = false;
+            autoscroll_speed_ = 0.f;
+            autoscroll_timer_.stop();
+        }
+    }
+
+    void focusOutEvent(QFocusEvent*) override {
+        mouse_selecting_  = false;
+        autoscroll_speed_ = 0.f;
+        autoscroll_timer_.stop();
+        ctrl_.dismiss_suggestions();
+        popup_->hide_popup();
+        update();
+    }
+
+    void changeEvent(QEvent* ev) override {
+        if (ev->type() == QEvent::WindowStateChange) {
+            if (window()->isMinimized())
+                popup_->hide_popup();
+        }
+        QWidget::changeEvent(ev);
+    }
+
+private:
+    float max_scroll_y() const {
+        return page_metrics().max_scroll(pages_.size());
+    }
+
+    // A drag can leave the widget's bounds entirely (Qt keeps delivering
+    // mouseMoveEvent for the rest of the press-drag-release sequence via its
+    // implicit grab) — hit_test has no page to match past the visible edges
+    // and falls back to snapping the cursor to the document's end, which is
+    // wrong for a drag that merely went past the TOP. Clamp to just inside
+    // the viewport first so hit_test always resolves to the nearest visible
+    // line at the edge instead.
+    QPointF clamp_to_viewport(QPointF pos) const {
+        pos.setY(std::clamp(pos.y(), 0.0, (double)height()));
+        return pos;
+    }
+
+    // Ramp auto-scroll speed by how far the drag position sits past the
+    // viewport's top/bottom edge; starts the repeating timer while active,
+    // stops it once the drag returns to the safe zone (Word/VS Code feel).
+    void update_autoscroll(const QPointF& pos) {
+        constexpr float kMargin   = 32.f;   // hot-zone width near each edge
+        constexpr float kMaxOver  = 120.f;  // past-margin distance for max speed
+        constexpr float kMinSpeed = 4.f;    // px/tick just inside the hot-zone
+        constexpr float kMaxSpeed = 36.f;   // px/tick fully ramped (or off-widget)
+
+        float dir = 0.f, over = 0.f;
+        if (pos.y() < kMargin) {
+            dir = -1.f; over = kMargin - (float)pos.y();
+        } else if (pos.y() > (float)height() - kMargin) {
+            dir = 1.f; over = (float)pos.y() - ((float)height() - kMargin);
+        }
+
+        if (dir == 0.f) {
+            autoscroll_speed_ = 0.f;
+            autoscroll_timer_.stop();
+            return;
+        }
+        over = std::clamp(over, 0.f, kMaxOver);
+        autoscroll_speed_ = dir * (kMinSpeed + (over / kMaxOver) * (kMaxSpeed - kMinSpeed));
+        if (!autoscroll_timer_.isActive()) autoscroll_timer_.start();
+    }
+
+    void do_autoscroll_tick() {
+        if (!mouse_selecting_ || autoscroll_speed_ == 0.f) {
+            autoscroll_timer_.stop();
+            return;
+        }
+        scroll_.nudge(autoscroll_speed_);   // a live drag beats any animation
+        screenplay::Cursor c = hit_test(clamp_to_viewport(mouse_last_pos_));
+        ctrl_.set_selection(mouse_anchor_, c);
+        update();
+    }
+
+    // Mark every Character block matching highlight_character_ plus the
+    // Parenthetical/Dialogue chain that follows it. O(blocks), run per relayout.
+    void recompute_char_highlight() {
+        char_highlight_blocks_.clear();
+        if (highlight_character_.empty()) return;
+        const auto& blocks = ctrl_.state().script.blocks;
+        char_highlight_blocks_.assign(blocks.size(), 0);
+        using BT = screenplay::BlockType;
+        bool in_chain = false;
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            switch (blocks[i].type) {
+            case BT::Character: {
+                std::string raw = blocks[i].text;
+                auto paren = raw.find(" (");     // strip "(CONT'D)" etc.
+                if (paren != std::string::npos) raw = raw.substr(0, paren);
+                const std::string norm = QString::fromStdString(raw)
+                                             .trimmed().toUpper().toStdString();
+                in_chain = (norm == highlight_character_);
+                if (in_chain) char_highlight_blocks_[i] = 1;
+                break;
+            }
+            case BT::Parenthetical:
+            case BT::Dialogue:
+            case BT::DualDialogue:
+                if (in_chain) char_highlight_blocks_[i] = 1;
+                break;
+            default:
+                in_chain = false;
+                break;
+            }
+        }
+    }
+
+    // Same rule as the global QSS scrollbar (ThemeManager::apply_to_app),
+    // just with margin:0 instead of margin:2px — the canvas scrollbar sits
+    // flush against the viewport edge. Both now build from the SAME
+    // DesignTokens::ScrollbarMetrics, so they can no longer drift apart (they
+    // previously disagreed: this one was 5px radius / 32px min-height vs the
+    // global rule's 4px / 28px).
+    void style_scrollbar() {
+        if (!vscroll_) return;
+        using SB = screenplay::ui::ScrollbarMetrics;
+        QString ss = QString::fromUtf8(
+            "QScrollBar:vertical { background:transparent; width:%1px; margin:0; }"
+            "QScrollBar::handle:vertical { background:{scrollbar}; border-radius:%2px;"
+            "                              min-height:%3px; }"
+            "QScrollBar::handle:vertical:hover { background:{scrollbarHover}; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }")
+            .arg(SB::Width).arg(SB::HandleRadius).arg(SB::MinHandleLength);
+        ss.replace("{scrollbar}",      MD3::hx(MD3::ScrollbarBg));
+        ss.replace("{scrollbarHover}", MD3::hx(MD3::ScrollbarHoverBg));
+        vscroll_->setStyleSheet(ss);
+    }
+
+    // ── Keep the caret line inside the viewport (Final Draft behaviour) ───
+    void ensure_cursor_visible() {
+        constexpr float kMargin = 56.f;   // comfort margin above/below caret
+
+        const auto caret = find_caret_line();
+        if (!caret) return;
+
+        // Instant (not animated): typing must never lag the caret.
+        if (caret->top < kMargin)
+            scroll_.nudge(caret->top - kMargin);
+        else if (caret->bottom() > (float)height() - kMargin)
+            scroll_.nudge(caret->bottom() - ((float)height() - kMargin));
+    }
+
+    /// The visual line the caret is on, located on screen.
+    std::optional<screenplay::ui::PageMetrics::Placement>
+    find_caret_line() const {
+        const auto& st = ctrl_.state();
+        return page_metrics().find_line(pages_, [&](const auto& vl) {
+            return vl.block_idx == st.cursor.block_idx
+                && line_holds_cursor(vl, st);
+        });
+    }
+
+    /// The final wrapped line of a block owns the position just past its end,
+    /// so the caret at the very end of a block has exactly one home.
+    static bool line_holds_cursor(const screenplay::layout::VisualLine& vl,
+                                  const screenplay::editor::EditorState& st) {
+        const size_t block_len = st.script.blocks[vl.block_idx].text.size();
+        const bool   is_last   = (vl.end_offset >= block_len);
+        return st.cursor.byte_offset >= vl.start_offset
+            && (is_last ? st.cursor.byte_offset <= vl.end_offset
+                        : st.cursor.byte_offset <  vl.end_offset);
+    }
+
+    // ── Hit-test: screen pixel → document Cursor ──────────────────────────
+    screenplay::Cursor hit_test(QPointF pos) const {
+        const auto metrics = page_metrics();
+        const auto page = metrics.page_at((float)pos.y(), pages_.size());
+        if (!page) return document_end();
+
+        const auto* line = nearest_line(*page, metrics, (float)pos.y());
+        if (!line) return document_end();
+
+        return { line->block_idx,
+                 offset_at(*line, metrics, (float)pos.x()) };
+    }
+
+    screenplay::Cursor document_end() const {
+        const auto& blocks = ctrl_.state().script.blocks;
+        if (blocks.empty()) return { 0, 0 };
+        return { blocks.size() - 1, blocks.back().text.size() };
+    }
+
+    /// The line whose band is closest to `y`, so a click in the gap between
+    /// two lines still lands on one of them.
+    const screenplay::layout::VisualLine*
+    nearest_line(size_t page_index,
+                 const screenplay::ui::PageMetrics& metrics, float y) const {
+        const screenplay::layout::VisualLine* best = nullptr;
+        float best_distance = std::numeric_limits<float>::max();
+        for (const auto& vl : pages_[page_index].lines) {
+            if (vl.is_more || vl.is_contd) continue;   // virtual lines
+            const float top    = metrics.line_top(page_index, vl);
+            const float bottom = top + metrics.line_height(vl);
+            const float distance = (y >= top && y < bottom)
+                ? 0.f
+                : std::min(std::abs(y - top), std::abs(y - bottom));
+            if (distance < best_distance) { best_distance = distance; best = &vl; }
+        }
+        return best;
+    }
+
+    /// Byte offset of the character boundary nearest to `x`.
+    size_t offset_at(const screenplay::layout::VisualLine& line,
+                     const screenplay::ui::PageMetrics& metrics, float x) const {
+        QFont font; font.setFamily(screenplay::ui::ScreenplayFont::family());
+        font.setPixelSize(qRound(engine_.pt_size() * metrics.scale()));
+        font.setStyleHint(QFont::TypeWriter);
+        screenplay::ui::ScreenplayFont::apply_render_quality(font);
+        const QFontMetricsF fm(font);
+
+        const float relative = x - metrics.x_of(line.x);
+        const QString text = QString::fromStdString(line.display_text);
+
+        int   best = 0;
+        float best_distance = std::abs(relative);
+        for (int i = 1; i <= text.size(); ++i) {
+            const float width = (float)fm.horizontalAdvance(text.left(i));
+            const float distance = std::abs(relative - width);
+            if (distance < best_distance) { best_distance = distance; best = i; }
+            if (width > relative + 32.f) break;   // far past the click
+        }
+
+        const size_t offset =
+            line.start_offset + (size_t)text.left(best).toUtf8().size();
+        return std::min(offset,
+                        ctrl_.state().script.blocks[line.block_idx].text.size());
+    }
+
+    // ── Custom page rendering (bypass IRenderTarget for full MD3 look) ────
+    void render_pages(QPainter& painter, float dpi,
+                      const screenplay::render::RenderConfig& cfg) {
+        // Snap to nearest 0.5 physical pixel to avoid sub-pixel text blur.
+        auto snap = [](float v) { return std::round(v * 2.f) / 2.f; };
+
+        const auto& geo = engine_.geometry();
+        const float zoom = cfg.zoom;
+        const float pw   = geo.page_w * dpi * zoom;
+        const float ph   = geo.page_h * dpi * zoom;
+        const float cx   = width() * .5f;
+        const float gap  = cfg.page_gap_px;
+
+        float py = gap - cfg.scroll_y_px;
+
+        // ── Title page (before script pages, no page number) ──────────────
+        const auto& tp = ctrl_.state().script.title_page;
+        if (tp.enabled) {
+            float tpx = cx - pw * .5f;
+
+            const QRectF tp_rect(tpx, py, pw, ph);
+            draw_page_shadow(painter, tp_rect);
+            painter.fillRect(tp_rect, MD3::PageBg);
+            painter.setPen(QPen(MD3::PageBorder, 1));
+            painter.drawRect(tp_rect);
+            painter.save();
+            painter.setClipRect(tp_rect);
+
+            cover_.render(painter, tp, {
+                tp_rect,
+                geo.margin_left * dpi * zoom,
+                geo.margin_bot  * dpi * zoom,
+                engine_.pt_size() * dpi * zoom });
+
+            painter.restore();
+            py += ph + gap;
+        }
+
+        const auto& st = ctrl_.state();
+
+        // Scene labels by block. Unlocked these are positions; locked they are
+        // the frozen numbers, suffixes and all — production::scene_numbers is
+        // the one place that decides, so the page, the reports and the PDF can
+        // never disagree about what a scene is called.
+        std::vector<QString> scene_label_by_block;
+        if (scene_num_mode_ != SceneNumMode::None) {
+            scene_label_by_block.resize(st.script.blocks.size());
+            for (const auto& sn : screenplay::production::scene_numbers(st.script))
+                scene_label_by_block[sn.block_idx] =
+                    QString::fromStdString(sn.label) + ".";
+        }
+
+        for (const auto& page : pages_) {
+            if (py + ph < 0)  { py += ph + gap; continue; }
+            if (py > height()) break;
+
+            float px = cx - pw * .5f;
+
+            const QRectF page_rect(px, py, pw, ph);
+            draw_page_shadow(painter, page_rect);
+
+            // Flat page: solid fill + a single hairline border. No rounding,
+            // no elevation — a plain 2D plane, like a Word/Pages page.
+            painter.fillRect(page_rect, MD3::PageBg);
+            painter.setPen(QPen(MD3::PageBorder, 1));
+            painter.drawRect(page_rect);
+
+            // Page number, flush with the text's right margin, 0.5 in (36 pt)
+            // from the top of the page. Numbered from page one at the user's
+            // request; the printed convention omits it on the first page.
+            {
+                painter.setPen(MD3::PageTextDim);
+                QFont pnf; pnf.setFamily(screenplay::ui::ScreenplayFont::family());
+                pnf.setPixelSize(qRound(engine_.pt_size() * dpi * zoom));
+                screenplay::ui::ScreenplayFont::apply_render_quality(pnf);
+                painter.setFont(pnf);
+                QFontMetricsF pnfm(pnf);
+                QString pnum = QString::number(page.number) + ".";
+                float nr_x = px + (geo.page_w - geo.margin_right) * dpi * zoom
+                             - pnfm.horizontalAdvance(pnum);
+                float nr_y = py + 36.f * dpi * zoom + pnfm.ascent();
+                painter.drawText(QPointF(snap(nr_x), snap(nr_y)), pnum);
+            }
+
+            // Note markers live OUTSIDE the sheet, in the workspace beside it,
+            // so they never sit on top of the screenplay. Their positions are
+            // collected inside the clipped loop below and drawn after the clip
+            // is released — anything drawn while the page clip is active is
+            // confined to the sheet by definition.
+            std::vector<float> note_mark_ys;
+
+            // Clip to page
+            painter.save();
+            painter.setClipRect(page_rect);
+
+            // Draw each visual line
+            QFont tf; tf.setFamily(screenplay::ui::ScreenplayFont::family());
+            tf.setPixelSize(qRound(engine_.pt_size() * dpi * zoom));
+            tf.setStyleHint(QFont::TypeWriter);
+            screenplay::ui::ScreenplayFont::apply_render_quality(tf);
+            painter.setFont(tf);
+            QFontMetricsF tfm(tf);
+            const StyledFontSet fonts(tf);
+
+            for (const auto& vl : page.lines) {
+                float tx = px + vl.x * dpi * zoom;
+                float ty = py + vl.y * dpi * zoom;
+                float lh_px = std::round(vl.height * dpi * zoom);
+
+                // ── Room for the inline preview ───────────────────────────
+                // A right-aligned element (Transition) already ends AT the
+                // right margin, so a preview appended after it would run off
+                // the sheet and get sliced by the page clip. Shifting the
+                // whole line left by the preview's width makes typed text +
+                // preview finish exactly at the margin instead — and because
+                // the glyphs, selection boxes and caret are all positioned
+                // from `tx`, they move together and stay aligned.
+                const std::string line_ghost = ghost_for_line(vl, st);
+                if (!line_ghost.empty()) {
+                    const float line_w = tfm.horizontalAdvance(
+                        QString::fromStdString(vl.display_text));
+                    const float text_right =
+                        px + (geo.page_w - geo.margin_right) * dpi * zoom;
+                    if (tx + line_w >= text_right - 1.f)      // ends at margin
+                        tx -= tfm.horizontalAdvance(
+                            QString::fromStdString(line_ghost));
+                }
+
+                // ── Virtual MORE / CONT'D lines (gray italic, no editing) ─────
+                if (vl.is_more || vl.is_contd) {
+                    QFont ghost_f = tf;
+                    ghost_f.setItalic(true);
+                    painter.setFont(ghost_f);
+                    QFontMetricsF ghost_fm(ghost_f);
+                    painter.setPen(MD3::PageTextDim);
+                    painter.drawText(QPointF(snap(tx), snap(ty + ghost_fm.ascent())),
+                        QString::fromStdString(vl.display_text));
+                    painter.setFont(tf);
+                    continue;
+                }
+
+                // Whole-block-representative font + metrics — used below only
+                // for overlay positioning (selection/search/character-highlight
+                // boxes), which don't need per-character exactness. The actual
+                // glyphs are drawn per-span further down, using the block's
+                // real bold_runs/italic_runs/underline_runs (which is what lets
+                // "select one word, click Bold" style only that word).
+                const auto& blk_ref = st.script.blocks[vl.block_idx];
+                bool eff_bold = blk_ref.is_bold_whole();
+                if (bold_scene_headings_
+                        && blk_ref.type == screenplay::BlockType::SceneHeading)
+                    eff_bold = true;
+                // Only eight bold/italic/underline combinations exist, and
+                // they were being rebuilt for every visible line — around five
+                // thousand QFontMetricsF constructions a second at 144 Hz.
+                // Built once per paint instead, indexed by the three bits.
+                const StyledFont& styled = fonts.pick(
+                    eff_bold, blk_ref.is_italic_whole(),
+                    blk_ref.is_underline_whole());
+                const QFont&         line_font = styled.font;
+                const QFontMetricsF& line_fm   = styled.metrics;
+
+                // ── Active-block highlight: coloured left marker + faint tint ───
+                bool active = (vl.block_idx == st.cursor.block_idx);
+                if (active && vl.line_in_block == 0) {
+                    float block_line_count = (float)std::max(size_t(1),
+                        [&]{
+                            size_t cnt = 0;
+                            for (const auto& l2 : page.lines)
+                                if (l2.block_idx == vl.block_idx) ++cnt;
+                            return cnt;
+                        }());
+                    float bh = lh_px * block_line_count + 4;
+                    QColor bc = block_color(blk_ref.type);
+                    // Faint element-colour tint across the full page width
+                    QColor tint(bc); tint.setAlpha(MD3::caretTintAlpha());
+                    painter.fillRect(QRectF(px, ty - 2, pw, bh), tint);
+                    // 3px solid element-colour left marker
+                    painter.fillRect(QRectF(px, ty - 2, 3, bh), bc);
+                }
+
+                // ── Character dialogue highlight (behind text) ───────────────
+                if (vl.block_idx < char_highlight_blocks_.size() &&
+                        char_highlight_blocks_[vl.block_idx]) {
+                    const float hw = (float)line_fm.horizontalAdvance(
+                        QString::fromStdString(vl.display_text));
+                    painter.fillRect(QRectF(tx - 5, ty, hw + 10, lh_px),
+                                     MD3::pageOverlay(12, 16));
+                }
+
+                // ── Search highlights (drawn BEHIND text) ─────────────────────
+                if (search_.active()) {
+                    const auto& hits = search_.matches();
+                    for (int mi = 0; mi < (int)hits.size(); ++mi) {
+                        const auto& m = hits[(size_t)mi];
+                        if (m.block_idx != vl.block_idx) continue;
+                        if (m.end_offset   <= vl.start_offset) continue;
+                        if (m.start_offset >= vl.end_offset)   continue;
+
+                        // Overlap of match with this visual line
+                        size_t ov_s = std::max(m.start_offset, vl.start_offset) - vl.start_offset;
+                        size_t ov_e = std::min(m.end_offset,   vl.end_offset)   - vl.start_offset;
+                        ov_s = std::min(ov_s, vl.display_text.size());
+                        ov_e = std::min(ov_e, vl.display_text.size());
+
+                        float hx0 = tfm.horizontalAdvance(
+                            QString::fromStdString(vl.display_text.substr(0, ov_s)));
+                        float hx1 = tfm.horizontalAdvance(
+                            QString::fromStdString(vl.display_text.substr(0, ov_e)));
+
+                        // Neutral highlights: current match darker/stronger,
+                        // other matches a lighter wash — both greyscale.
+                        const bool is_cur = (mi == search_.current_index());
+                        painter.fillRect(
+                            QRectF(tx + hx0, ty, hx1 - hx0, lh_px),
+                            is_cur ? MD3::pageOverlay(95, 82)
+                                   : MD3::pageOverlay(42, 38));
+                    }
+                }
+
+                // ── Selection highlight ───────────────────────────────────────
+                if (st.has_selection) {
+                    // Normalise anchor/cursor into [sel_s, sel_e]
+                    auto cp_before = [](const screenplay::Cursor& a,
+                                        const screenplay::Cursor& b) {
+                        return (a.block_idx != b.block_idx)
+                            ? a.block_idx  < b.block_idx
+                            : a.byte_offset < b.byte_offset;
+                    };
+                    screenplay::Cursor sel_s = cp_before(st.cursor, st.sel_anchor)
+                        ? st.cursor : st.sel_anchor;
+                    screenplay::Cursor sel_e = cp_before(st.cursor, st.sel_anchor)
+                        ? st.sel_anchor : st.cursor;
+
+                    size_t bi = vl.block_idx;
+                    if (bi >= sel_s.block_idx && bi <= sel_e.block_idx) {
+                        // Effective byte range of selection within this block
+                        size_t eff_s = (bi == sel_s.block_idx) ? sel_s.byte_offset : 0;
+                        size_t eff_e = (bi == sel_e.block_idx)
+                            ? sel_e.byte_offset
+                            : std::numeric_limits<size_t>::max();
+
+                        // Intersect with this visual line
+                        if (eff_s < vl.end_offset && eff_e > vl.start_offset) {
+                            size_t line_s = (eff_s > vl.start_offset)
+                                ? eff_s - vl.start_offset : 0;
+                            size_t line_e = std::min(eff_e, vl.end_offset)
+                                - vl.start_offset;
+                            line_s = std::min(line_s, vl.display_text.size());
+                            line_e = std::min(line_e, vl.display_text.size());
+
+                            float hx0 = line_fm.horizontalAdvance(
+                                QString::fromStdString(vl.display_text.substr(0, line_s)));
+                            float hx1 = line_fm.horizontalAdvance(
+                                QString::fromStdString(vl.display_text.substr(0, line_e)));
+
+                            // If selection continues past this line, extend
+                            // highlight to cover trailing whitespace visually
+                            if (eff_e >= vl.end_offset && !vl.display_text.empty())
+                                hx1 = std::max(hx1, (float)line_fm.horizontalAdvance(
+                                    QString::fromStdString(vl.display_text)) + 6.f);
+
+                            painter.fillRect(
+                                QRectF(tx + hx0, ty, hx1 - hx0, lh_px),
+                                MD3::pageOverlay(52, 46));   // neutral selection
+                        }
+                    }
+                }
+
+                // ── Text ──────────────────────────────────────────────────────
+                // Split this visual line into style-homogeneous spans by
+                // overlapping it with the block's real style ranges, and draw
+                // each span with its own font. Cut points = every run boundary
+                // that falls inside this line; between two adjacent cuts the
+                // style is constant, so one coverage check per gap suffices.
+                {
+                    std::vector<size_t> cuts = { 0, vl.display_text.size() };
+                    auto add_cuts = [&](const screenplay::StyleRuns& runs) {
+                        for (auto [rs, re] : runs) {
+                            if (re <= vl.start_offset || rs >= vl.end_offset) continue;
+                            size_t ls = (rs > vl.start_offset) ? rs - vl.start_offset : 0;
+                            size_t le = std::min(re, vl.end_offset) - vl.start_offset;
+                            cuts.push_back(std::min(ls, vl.display_text.size()));
+                            cuts.push_back(std::min(le, vl.display_text.size()));
+                        }
+                    };
+                    add_cuts(blk_ref.bold_runs);
+                    add_cuts(blk_ref.italic_runs);
+                    add_cuts(blk_ref.underline_runs);
+                    std::sort(cuts.begin(), cuts.end());
+                    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+
+                    float run_x = tx;
+                    painter.setPen(MD3::PageText);
+                    for (size_t ci = 0; ci + 1 < cuts.size(); ++ci) {
+                        const size_t s = cuts[ci], e = cuts[ci + 1];
+                        if (s >= e) continue;
+                        const size_t abs_s = vl.start_offset + s, abs_e = vl.start_offset + e;
+
+                        bool sp_bold = screenplay::style_covers(blk_ref.bold_runs, abs_s, abs_e);
+                        if (bold_scene_headings_
+                                && blk_ref.type == screenplay::BlockType::SceneHeading)
+                            sp_bold = true;
+                        QFont span_font = tf;
+                        span_font.setBold(sp_bold);
+                        span_font.setItalic(screenplay::style_covers(blk_ref.italic_runs, abs_s, abs_e));
+                        span_font.setUnderline(screenplay::style_covers(blk_ref.underline_runs, abs_s, abs_e));
+                        painter.setFont(span_font);
+                        const QFontMetricsF span_fm(span_font);
+
+                        const QString span_text = QString::fromStdString(
+                            vl.display_text.substr(s, e - s));
+                        painter.drawText(QPointF(snap(run_x), snap(ty + span_fm.ascent())), span_text);
+                        run_x += span_fm.horizontalAdvance(span_text);
+                    }
+                    painter.setFont(tf);   // restore base font
+                }
+
+                // ── Scene numbers (left / right / both) ──────────────────────
+                if (!scene_label_by_block.empty() && vl.line_in_block == 0
+                        && blk_ref.type == screenplay::BlockType::SceneHeading) {
+                    const QString sn_str = scene_label_by_block[vl.block_idx];
+                    if (!sn_str.isEmpty()) {
+                        painter.save();
+                        painter.setFont(line_font);
+                        painter.setPen(MD3::PageTextDim);
+                        QFontMetricsF sn_fm(line_font);
+                        if (scene_num_mode_ == SceneNumMode::Left ||
+                                scene_num_mode_ == SceneNumMode::Both) {
+                            float left_x = px + (geo.margin_left - 36.f) * dpi * zoom;
+                            painter.drawText(QPointF(snap(left_x), snap(ty + sn_fm.ascent())),
+                                sn_str);
+                        }
+                        if (scene_num_mode_ == SceneNumMode::Right ||
+                                scene_num_mode_ == SceneNumMode::Both) {
+                            float right_x = px + (geo.page_w - geo.margin_right + 4.f) * dpi * zoom;
+                            painter.drawText(QPointF(snap(right_x), snap(ty + sn_fm.ascent())),
+                                sn_str);
+                        }
+                        painter.restore();
+                    }
+                }
+
+                // ── Forced page break ─────────────────────────────────────────
+                // The break itself is invisible once the page turns, so the
+                // element that carries it is tagged: without a mark, a writer
+                // cannot tell an authored break from one pagination happened
+                // to produce, and so cannot find it again to remove it.
+                if (vl.line_in_block == 0 && blk_ref.page_break_before) {
+                    painter.save();
+                    QColor rule = MD3::PageTextDim;
+                    rule.setAlpha(120);
+                    QPen pen(rule, 1, Qt::DashLine);
+                    pen.setDashPattern({ 4, 4 });
+                    painter.setPen(pen);
+                    const float ry = ty - lh_px * .45f;
+                    const float rx0 = px + geo.margin_left * dpi * zoom;
+                    const float rx1 = px + (geo.page_w - geo.margin_right) * dpi * zoom;
+                    QFont tag_font = line_font;
+                    tag_font.setPixelSize(qRound(line_font.pixelSize() * .62f));
+                    const QFontMetricsF tag_fm(tag_font);
+                    const QString tag = tr_ui("PAGE BREAK");
+                    const float tag_w = (float)tag_fm.horizontalAdvance(tag) + 8.f;
+                    painter.drawLine(QPointF(rx0, ry), QPointF(rx1 - tag_w, ry));
+                    painter.setFont(tag_font);
+                    painter.setPen(rule);
+                    painter.drawText(QPointF(snap(rx1 - tag_w + 6.f),
+                                             snap(ry + tag_fm.ascent() * .38f)), tag);
+                    painter.restore();
+                }
+
+                // ── Revision mark ─────────────────────────────────────────────
+                // The asterisk in the right margin: what an AD scans a fresh
+                // set of coloured pages for. Every line of a changed element
+                // carries one, exactly as on a printed production draft, and it
+                // is tinted with the pass's own paper colour so several passes
+                // stay legible at once.
+                if (blk_ref.revision != screenplay::Revision::None) {
+                    painter.save();
+                    painter.setFont(line_font);
+                    QColor mark = QColor::fromRgb(
+                        screenplay::revision_rgb(blk_ref.revision));
+                    if (!MD3::dark) mark = mark.darker(160);
+                    painter.setPen(mark);
+                    const float mark_x =
+                        px + (geo.page_w - geo.margin_right + 16.f) * dpi * zoom;
+                    painter.drawText(
+                        QPointF(snap(mark_x), snap(ty + line_fm.ascent())), "*");
+                    painter.restore();
+                }
+
+                // ── Note marker ───────────────────────────────────────────────
+                // Only the position is captured here; the marker itself is
+                // drawn beside the sheet once the page clip is released (see
+                // below), so it never overlaps the screenplay.
+                if (vl.line_in_block == 0 && !blk_ref.note.empty())
+                    note_mark_ys.push_back(ty + lh_px * .5f);
+
+                // ── Spell-check wavy underlines ───────────────────────────────
+                if (spell_.available()) {
+                    const float uy = ty + line_fm.ascent() + 2.f;
+                    for (const auto& ms : spell_.misspellings(vl.block_idx)) {
+                        size_t ms_end = ms.start + ms.length;
+                        if (ms_end <= vl.start_offset) continue;
+                        if (ms.start >= vl.end_offset)  continue;
+
+                        size_t ov_s = std::max(ms.start, vl.start_offset) - vl.start_offset;
+                        size_t ov_e = std::min(ms_end,   vl.end_offset)   - vl.start_offset;
+                        ov_s = std::min(ov_s, vl.display_text.size());
+                        ov_e = std::min(ov_e, vl.display_text.size());
+
+                        float wx0 = line_fm.horizontalAdvance(
+                            QString::fromStdString(vl.display_text.substr(0, ov_s)));
+                        float wx1 = line_fm.horizontalAdvance(
+                            QString::fromStdString(vl.display_text.substr(0, ov_e)));
+                        if (wx1 <= wx0) continue;
+
+                        // Draw wavy underline
+                        const float amp  = 1.5f;
+                        const float step = 3.5f;
+                        QPainterPath wave;
+                        float wx = tx + wx0;
+                        float wend = tx + wx1;
+                        wave.moveTo(wx, uy);
+                        bool up = true;
+                        while (wx < wend) {
+                            float nx = std::min(wx + step, wend);
+                            wave.quadTo((wx + nx) * 0.5f, uy + (up ? -amp : amp), nx, uy);
+                            wx = nx;
+                            up = !up;
+                        }
+                        painter.save();
+                        QPen wp(QColor(0xFF, 0x3A, 0x3A, 230));
+                        wp.setWidthF(1.6f);
+                        painter.setPen(wp);
+                        painter.setBrush(Qt::NoBrush);
+                        painter.setRenderHint(QPainter::Antialiasing);
+                        painter.drawPath(wave);
+                        painter.restore();
+                    }
+                }
+
+                // ── Inline SmartType preview ──────────────────────────────────
+                // Always drawn when there is one: `tx` was already shifted
+                // above if this line is right-aligned, so the preview lands
+                // inside the text column and is never clipped.
+                if (!line_ghost.empty()) {
+                    const float gx = tx + line_fm.horizontalAdvance(
+                        QString::fromStdString(vl.display_text));
+                    painter.save();
+                    painter.setFont(line_font);
+                    QColor ghost_c(MD3::PageTextDim); ghost_c.setAlpha(180);
+                    painter.setPen(ghost_c);
+                    painter.drawText(QPointF(snap(gx), snap(ty + line_fm.ascent())),
+                                     QString::fromStdString(line_ghost));
+                    painter.restore();
+                }
+
+                // ── Caret — correct on ALL wrapped lines ──────────────────────
+                if (active && blink_on_ && hasFocus()) {
+                    // Determine whether the cursor byte offset falls on this line.
+                    // For non-final wrapped lines: [start_offset, end_offset)
+                    // For the final wrapped line:  [start_offset, end_offset]
+                    const size_t block_text_size =
+                        st.script.blocks[vl.block_idx].text.size();
+                    bool is_last_line = (vl.end_offset >= block_text_size);
+
+                    bool cursor_here =
+                        (st.cursor.byte_offset >= vl.start_offset) &&
+                        (is_last_line
+                            ? (st.cursor.byte_offset <= vl.end_offset)
+                            : (st.cursor.byte_offset <  vl.end_offset));
+
+                    if (cursor_here) {
+                        const auto& blk_c = st.script.blocks[vl.block_idx];
+                        size_t raw_len = (st.cursor.byte_offset > vl.start_offset)
+                            ? st.cursor.byte_offset - vl.start_offset : 0;
+
+                        // For uppercase blocks, display_text is toUpper(block.text).
+                        // Remap raw_len through the same transform so the caret
+                        // lands at the correct display-space byte position.
+                        size_t cursor_in_line;
+                        if (screenplay::layout::format_for(blk_c.type).uppercase
+                                && vl.start_offset <= blk_c.text.size()) {
+                            std::string raw_seg = blk_c.text.substr(
+                                vl.start_offset,
+                                std::min(raw_len,
+                                         blk_c.text.size() - vl.start_offset));
+                            std::string up_seg =
+                                QString::fromStdString(raw_seg).toUpper().toStdString();
+                            cursor_in_line = std::min(up_seg.size(),
+                                                      vl.display_text.size());
+                        } else {
+                            cursor_in_line = std::min(raw_len,
+                                                      vl.display_text.size());
+                        }
+
+                        float cw = line_fm.horizontalAdvance(
+                            QString::fromStdString(
+                                vl.display_text.substr(0, cursor_in_line)));
+                        // Caret in the current element's accent colour.
+                        painter.setPen(QPen(block_color(blk_c.type), 2.f));
+                        painter.drawLine(
+                            QPointF(tx + cw, ty),
+                            QPointF(tx + cw, ty + lh_px));
+                    }
+                }
+            }
+
+            painter.restore();   // page clip released
+
+            // ── Note markers, beside the sheet ───────────────────────────
+            // Drawn here so they sit in the workspace to the right of the
+            // page rather than on it. They still ride at their block's own
+            // height, so they scroll with the page.
+            if (!note_mark_ys.empty()) {
+                const float d  = 24.f * dpi * zoom;
+                const float mx = px + pw + 14.f;      // just past the page edge
+                painter.save();
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                for (float my : note_mark_ys) {
+                    const QRectF disc(mx, my - d * .5f, d, d);
+                    painter.setBrush(MD3::PageBg);
+                    painter.setPen(QPen(MD3::Primary, 1.2));
+                    painter.drawEllipse(disc);
+                    const float inset = d * 0.24f;
+                    icons::make(icons::Id::Comment, MD3::Primary)
+                        .paint(&painter,
+                               disc.adjusted(inset, inset, -inset, -inset).toRect(),
+                               Qt::AlignCenter);
+                }
+                painter.restore();
+            }
+            py += ph + gap;
+        }
+    }
+
+    // The inline SmartType preview for one visual line, or "" when this line
+    // isn't the one being completed. Extracted so render_pages can know the
+    // preview's width BEFORE it positions the line — a right-aligned element
+    // has to shift left to make room for it.
+    std::string ghost_for_line(const screenplay::layout::VisualLine& vl,
+                               const screenplay::editor::EditorState& st) const {
+        if (!popup_->is_visible() || st.suggestions.empty()) return {};
+        if (vl.block_idx != st.cursor.block_idx)              return {};
+        if (vl.is_more || vl.is_contd)                        return {};
+
+        const std::string& block_text = st.script.blocks[vl.block_idx].text;
+        const bool is_last  = (vl.end_offset >= block_text.size());
+        const bool at_end   = (st.cursor.byte_offset == block_text.size());
+        const bool on_line  = (st.cursor.byte_offset >= vl.start_offset) &&
+                              (is_last ? (st.cursor.byte_offset <= vl.end_offset)
+                                       : (st.cursor.byte_offset <  vl.end_offset));
+        if (!on_line || !at_end) return {};
+
+        const int sidx = (st.suggestion_idx >= 0 &&
+                          st.suggestion_idx < (int)st.suggestions.size())
+                             ? st.suggestion_idx : 0;
+        const std::string& sugg = st.suggestions[(size_t)sidx];
+
+        auto upper = [](const std::string& s) {
+            return QString::fromStdString(s).toUpper().toStdString();
+        };
+        // Prefer completing the WHOLE block: a multi-word suggestion like
+        // "CUT TO:" must complete "CUT " to "TO:", not to the whole phrase
+        // again — the last-word-only rule turned a trailing space into
+        // "CUT CUT TO:". Fall back to the last word for suggestions that
+        // complete a word mid-line (scene locations, times of day).
+        const std::string block_upper = upper(block_text);
+        if (sugg.size() >= block_upper.size() &&
+                sugg.compare(0, block_upper.size(), block_upper) == 0)
+            return sugg.substr(block_upper.size());
+
+        const size_t last_space = block_text.rfind(' ');
+        const std::string last_word_upper = upper(
+            last_space == std::string::npos ? block_text
+                                            : block_text.substr(last_space + 1));
+        // Nothing typed yet after the separator — "EXT. PRIVET DRIVE - " with
+        // the caret past the space. There is no prefix to complete, so the
+        // whole suggestion is the preview; returning nothing here left the
+        // time of day showing in the popup but never on the page.
+        if (last_word_upper.empty()) return sugg;
+
+        if (sugg.size() >= last_word_upper.size() &&
+                sugg.compare(0, last_word_upper.size(), last_word_upper) == 0)
+            return sugg.substr(last_word_upper.size());
+        return {};
+    }
+
+    void draw_type_strip(QPainter& painter, const screenplay::editor::EditorState& st) {
+        if (st.script.blocks.empty() ||
+            st.cursor.block_idx >= st.script.blocks.size()) return;
+        const auto& cb  = st.script.blocks[st.cursor.block_idx];
+        const QColor col = block_color(cb.type);
+
+        // Current-element badge, top-left. Flat: a soft tint of the element
+        // colour, a 1px element-colour border, element-colour text — reads on
+        // both the light and dark canvas.
+        QFont f; f.setFamily(screenplay::ui::Typography::family());
+        f.setPixelSize(screenplay::ui::Typography::size_px(screenplay::ui::Typography::Size::Caption));
+        f.setWeight(static_cast<QFont::Weight>(
+            screenplay::ui::Typography::weight(screenplay::ui::Typography::Weight::Semibold)));
+        screenplay::ui::ScreenplayFont::apply_render_quality(f);
+        painter.setFont(f);
+        QFontMetrics fm(f);
+        QString lbl = tr_block_label(cb.type);
+        int tw = fm.horizontalAdvance(lbl);
+
+        // The badge annotates the caret's element, so it rides at the caret's
+        // own height — but in the WORKSPACE beside the sheet, never on it, so
+        // it cannot sit over the screenplay. It moves with the page rather
+        // than being pinned to the viewport: pinning made it hover in place
+        // while the page slid underneath, which read as a bug.
+        const int bw = tw + 16, bh = 20;
+        const auto metrics = page_metrics();
+        const auto caret = metrics.find_line(pages_, [&](const auto& vl) {
+            return vl.block_idx == st.cursor.block_idx && vl.line_in_block == 0;
+        });
+        if (!caret) return;
+
+        const int by = int(caret->top + (caret->height - bh) * .5f);
+        const float page_top = metrics.page_top(caret->page_index);
+        // Only while the line is genuinely on its page and on screen;
+        // scrolled past, the badge simply goes with the page.
+        const bool on_page   = by >= page_top - 1
+                            && by + bh <= page_top + metrics.page_height() + 1;
+        const bool on_screen = by + bh >= 0 && by <= height();
+        if (!on_page || !on_screen) return;
+
+        // Sit in the workspace, just left of the page's edge.
+        const QRect badge(int(metrics.left()) - bw - 14, by, bw, bh);
+        QPainterPath bp; bp.addRoundedRect(badge, screenplay::ui::Radius::Small,
+                                                   screenplay::ui::Radius::Small);
+        QColor fill(col); fill.setAlpha(MD3::fillTintAlpha());
+        painter.fillPath(bp, fill);
+        painter.setPen(QPen(col, 1));
+        painter.drawPath(bp);
+        painter.setPen(col);
+        painter.drawText(badge, Qt::AlignCenter, lbl);
+    }
+
+    // Passive refreshes (scrolling, zoom, resize, theme change) must never make
+    // SmartType APPEAR — a fresh document already carries suggestions for its
+    // empty Scene Heading ("INT."/"EXT."/"I/E."), so any passive call to
+    // update_popup() would pop the list open without the writer typing a thing.
+    // Those callers use this instead: it only re-places (or hides) a popup that
+    // is already on screen, and does nothing at all when none is.
+    void reposition_popup() {
+        if (!popup_->is_visible()) return;
+        update_popup();
+    }
+
+    void update_popup() {
+        // If a suggestion was just accepted, block this one call and clear the flag.
+        // This suppresses re-population from wheelEvent, scroll, mouse, and the
+        // relayout timer — every path that reaches here.
+        if (just_accepted_) { just_accepted_ = false; popup_->hide_popup(); return; }
+
+        const auto& st = ctrl_.state();
+
+        // Hide when no suggestions or selection is active
+        if (st.suggestions.empty() || st.has_selection) {
+            popup_->hide_popup();
+            return;
+        }
+
+        const auto caret = find_caret_line();
+        if (!caret) { popup_->hide_popup(); return; }
+
+        // The popup opens just below the caret line. If that point is scrolled
+        // above the canvas top (into the toolbar/header band) or below the
+        // canvas bottom, the caret is out of view — hide the popup rather than
+        // draw it over the toolbar.
+        const float popup_top = caret->bottom() + 2.f;
+        if (popup_top < 0.f || caret->top > (float)height()) {
+            popup_->hide_popup();
+            return;
+        }
+
+        const auto metrics = page_metrics();
+        QFont tf; tf.setFamily(screenplay::ui::ScreenplayFont::family());
+        tf.setPixelSize(qRound(engine_.pt_size() * metrics.scale()));
+        tf.setStyleHint(QFont::TypeWriter);
+        screenplay::ui::ScreenplayFont::apply_render_quality(tf);
+        const QFontMetricsF tfm(tf);
+
+        const size_t cursor_in_line = std::min(
+            st.cursor.byte_offset - caret->line->start_offset,
+            caret->line->display_text.size());
+        const float caret_x = metrics.x_of(caret->line->x)
+            + (float)tfm.horizontalAdvance(QString::fromStdString(
+                  caret->line->display_text.substr(0, cursor_in_line)));
+
+        // Map canvas-local point to MainWindow coordinate space
+        const QPoint win_pt =
+            mapTo(window(), QPoint((int)caret_x, (int)popup_top));
+
+        popup_->set_block_type(st.script.blocks[st.cursor.block_idx].type);
+        popup_->show_suggestions(st.suggestions, st.suggestion_idx, win_pt);
+    }
+
+    // ── Search ────────────────────────────────────────────────────────────
+
+    void rebuild_search(const QString& query) {
+        const int type_filter = search_bar_ ? search_bar_->type_filter()
+                                            : screenplay::editor::ScriptSearch::kAnyType;
+        search_.rebuild(ctrl_.state().script, query, type_filter);
+        update_search_bar_info();
+    }
+
+    void advance_match(int step) {
+        if (const auto block = search_.advance(step)) {
+            update_search_bar_info();
+            scroll_to_block(*block);
+            update();
+        }
+    }
+
+    void update_search_bar_info() {
+        if (search_bar_)
+            search_bar_->set_match_info(search_.current_index(), search_.count());
+    }
+
+    void open_search() {
+        if (!search_bar_) return;
+        int sw = search_bar_->sizeHint().width();
+        search_bar_->move(width() - sw - 10, 10);
+        search_bar_->show();
+        search_bar_->raise();
+        search_bar_->focus_edit();
+    }
+
+    void close_search() {
+        if (search_bar_) search_bar_->hide();
+        search_.clear();
+        setFocus();
+        update();
+    }
+
+    // ── eventFilter: intercept Enter / Escape inside the search QLineEdit ─
+
+    bool eventFilter(QObject* obj, QEvent* ev) override {
+        if (search_bar_ && obj == search_bar_->edit()
+            && ev->type() == QEvent::KeyPress)
+        {
+            auto* ke = static_cast<QKeyEvent*>(ev);
+            if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+                if (ke->modifiers() & Qt::ShiftModifier) advance_match(-1);
+                else                                      advance_match(+1);
+                return true;
+            }
+            if (ke->key() == Qt::Key_Escape) { close_search(); return true; }
+        }
+        return QWidget::eventFilter(obj, ev);
+    }
+
+    std::unique_ptr<screenplay::layout::FreeTypeMetrics> metrics_ =
+        std::make_unique<screenplay::layout::FreeTypeMetrics>(
+            screenplay::ui::ScreenplayFont::load().c_str());
+
+    screenplay::layout::LayoutEngine      engine_{ *metrics_ };
+    screenplay::editor::EditorController  ctrl_;
+    screenplay::layout::PageList          pages_;
+    AutocompletePopup*                    popup_      = nullptr;
+    SearchBar*                            search_bar_ = nullptr;
+    QScrollBar*                           vscroll_    = nullptr;
+    bool                                  syncing_scrollbar_ = false;
+    screenplay::editor::ScriptSearch      search_;
+
+    screenplay::editor::SpellCache        spell_;
+
+    // Character highlight (click a character in Stats/Database panels)
+    std::string       highlight_character_;      // normalized uppercase
+    std::vector<char> char_highlight_blocks_;    // 1 = block is highlighted
+
+    // Air either side of the sheet: enough that the page reads as resting on
+    // a desk rather than jammed against the panel beside it.
+    static constexpr int kPageAirPx = 24;
+    /// How far one wheel notch travels. A notch is 120 units of angleDelta;
+    /// this is the distance a reader expects from one click of the wheel.
+    static constexpr float kWheelNotchPx = 96.f;
+    float  zoom_         = 1.f;
+    bool   blink_on_     = true;
+    SceneNumMode scene_num_mode_ = SceneNumMode::Both;
+    bool   bold_scene_headings_ = false;
+    bool   just_accepted_ = false;  // set true after accepting a suggestion;
+                                    // consumed by the next update_popup() call
+    bool   pending_follow_cursor_ = false;  // scroll caret into view after relayout
+    bool   pending_popup_open_    = false;  // the pending relayout came from typing,
+                                            // so it may open SmartType (see below)
+    // How often the UI asks the worker for finished results. Fast enough
+    // that a squiggle appears while the writer is still looking at the line,
+    // slow enough to cost nothing.
+    static constexpr int kSpellPollMs = 120;
+    QTimer relayout_timer_, blink_timer_, autosave_timer_, spell_timer_;
+    screenplay::ui::ScrollAnimator scroll_ {
+        this,
+        [this] { return max_scroll_y(); },
+        [this] {
+            reposition_popup();
+            // Scrolling brings new text into view, and the spell checker works
+            // on what is visible — so a scroll is what tells it to re-aim.
+            if (!spell_timer_.isActive()) spell_timer_.start(kSpellPollMs);
+            update();
+        }
+    };
+
+    screenplay::ui::CoverEditor cover_ {
+        this,
+        [this] { return ctrl_.state().script.title_page; },
+        [this](screenplay::TitlePage page) {
+            ctrl_.set_title_page(std::move(page));   // undoable
+            request_relayout();
+            emit script_changed();
+            update();
+        }
+    };
+
+    // Mouse drag selection
+    bool               mouse_selecting_ = false;
+    screenplay::Cursor mouse_anchor_    = { 0, 0 };
+
+    // Auto-scroll while drag-selecting past the viewport's top/bottom edge
+    QPointF mouse_last_pos_;
+    QTimer  autoscroll_timer_;
+    float   autoscroll_speed_ = 0.f;   // px/tick, signed: + down, - up, 0 = idle
+
+    // Multi-click tracking
+    int    click_count_ = 0;
+    QTimer click_timer_;
+};

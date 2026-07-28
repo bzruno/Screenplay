@@ -1,260 +1,342 @@
 #include "layout_engine.hpp"
+#include "../parsing/screenplay_parse.hpp"
 #include <QString>   // Unicode-aware toUpper
 #include <algorithm>
-#include <cctype>
+#include <cmath>
 
 namespace screenplay::layout {
 
+namespace {
+std::string to_upper(const std::string& s) {
+    return QString::fromStdString(s).toUpper().toStdString();
+}
+} // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vertical rhythm is locked to the 12 pt baseline grid: every line advances by
+// exactly kLineHeightPt and every inter-block gap is a multiple of the grid, so
+// no fractional positions are ever produced. Horizontal measurement uses real
+// Courier Prime glyph advances (via IFontMetrics) — never character counts.
+// ─────────────────────────────────────────────────────────────────────────────
 PageList LayoutEngine::layout(const screenplay::Script& script) const {
-    PageList pages;
-    Page     current_page;
-    current_page.number = 1;   // ← start at page 1 immediately (no flush trick)
-    float cursor_y = 0.f;
-    int   page_number = 1;
-
-    const float lh      = metrics_.line_height(pt_size_);
+    const float lh      = kLineHeightPt;
     const float print_h = geo_.printable_h();
-    const float print_w = geo_.printable_w();
 
-    // Open a new page and reset cursor
+    PageList pages;
+    Page  current_page;
+    current_page.number = 1;
+    int   page_number   = 1;
+    float cursor_y      = 0.f;    // offset below margin_top
+    float prev_after    = 0.f;    // space_after of the previous block (margin collapse)
+    // Type of the previous block, so a wrylie in the middle of a speech can
+    // be set tight against the line it interrupts (see continues_speech).
+    auto  prev_type     = screenplay::BlockType::Action;
+    bool  first_on_page = true;
+
     auto new_page = [&] {
         pages.push_back(std::move(current_page));
         current_page        = {};
         current_page.number = ++page_number;
         cursor_y            = 0.f;
+        first_on_page       = true;
     };
 
-    // Helper: how many lines does a block need?
-    auto block_line_count = [&](size_t bi) -> size_t {
-        const auto& b   = script.blocks[bi];
-        const auto  fmt = format_for(b.type);
-        float col_w = print_w - fmt.left_indent - fmt.right_indent;
-        auto breaks = metrics_.word_wrap(b.text, pt_size_, col_w);
-        return breaks.size() + 1;
+    // Wrap display text into lines, recording each line's start byte offset.
+    auto wrap = [&](const std::string& display, float col_w,
+                    std::vector<std::string>& lines,
+                    std::vector<size_t>& starts) {
+        auto breaks = metrics_.word_wrap(display, pt_size_, col_w);
+        size_t off = 0;
+        for (size_t br : breaks) {
+            lines.push_back(display.substr(off, br - off));
+            starts.push_back(off);
+            off = br;
+        }
+        if (off < display.size()) {
+            lines.push_back(display.substr(off));
+            starts.push_back(off);
+        }
+        if (lines.empty()) { lines.emplace_back(); starts.push_back(0); }
     };
+
+    // How many wrapped lines a block occupies (footprint estimation).
+    auto line_count = [&](size_t bi) -> int {
+        const auto& b   = script.blocks[bi];
+        const auto  fmt = format_for(b.type, profile_);
+        std::string disp = fmt.uppercase ? to_upper(b.text) : b.text;
+        return (int)metrics_.word_wrap(disp, pt_size_, fmt.col_width(geo_)).size() + 1;
+    };
+
+    // Uppercased NAME (without any Character Extension) of the Character block
+    // that owns the dialogue at/before bi — so a "(V.O.)" cue continues as
+    // "JOÃO (CONT'D)", never "JOÃO (V.O.) (CONT'D)".
+    auto owning_character = [&](size_t bi) -> std::string {
+        for (int ci = (int)bi; ci >= 0; --ci)
+            if (script.blocks[ci].type == screenplay::BlockType::Character)
+                return to_upper(parse::parse_character_cue(script.blocks[ci].text).name);
+        return {};
+    };
+
+    const BlockFormat char_fmt =
+        format_for(screenplay::BlockType::Character, profile_);
 
     for (size_t bi = 0; bi < script.blocks.size(); ++bi) {
         const auto& block = script.blocks[bi];
-        const auto  fmt   = format_for(block.type);
+        auto fmt = format_for(block.type, profile_);
 
-        // ── DualDialogue: render two columns side-by-side ─────────────────
+        // "FADE IN:" is the one Transition the industry convention sets flush
+        // LEFT (it opens the script/scene, unlike CUT TO:/DISSOLVE TO:/
+        // FADE OUT., which close one and stay right-aligned).
+        if (block.type == screenplay::BlockType::Transition) {
+            std::string t = parse::fold(parse::trim(block.text));
+            while (!t.empty() && (t.back() == ':' || t.back() == '.' || t.back() == ' '))
+                t.pop_back();
+            if (t == "fade in") fmt.right_align = false;
+        }
+
+        // An explicit author override wins over both the type default and the
+        // FADE IN heuristic above — it is the writer's stated intent, so it is
+        // applied last.
+        if (block.align != screenplay::BlockAlign::Default &&
+                supports_alignment(block.type)) {
+            fmt.right_align  = (block.align == screenplay::BlockAlign::Right);
+            fmt.center_align = (block.align == screenplay::BlockAlign::Center);
+        }
+
+        // ── DualDialogue: two columns, treated as one unbreakable unit ────
         if (block.type == screenplay::BlockType::DualDialogue) {
-            const float half_w = (print_w - 36.f) * 0.5f;   // ~190 pt per col, 36 pt gap
+            constexpr float gutter = 18.f;
+            const float half_w = (geo_.printable_w() - gutter) * 0.5f;
 
-            // Helper: wrap one DualDialogue block text into lines
-            auto wrap_col = [&](const std::string& txt,
-                                std::vector<std::string>& out_lines,
-                                std::vector<size_t>&      out_starts) {
-                auto brks = metrics_.word_wrap(txt, pt_size_, half_w);
-                size_t off = 0;
-                for (size_t br : brks) {
-                    out_lines.push_back(txt.substr(off, br - off));
-                    out_starts.push_back(off);
-                    off = br;
-                }
-                if (off < txt.size()) {
-                    out_lines.push_back(txt.substr(off));
-                    out_starts.push_back(off);
-                }
-                if (out_lines.empty()) { out_lines.emplace_back(); out_starts.push_back(0); }
-            };
+            std::vector<std::string> lcol, rcol;
+            std::vector<size_t>      lst,  rst;
+            wrap(block.text, half_w, lcol, lst);
 
-            std::vector<std::string> left_lines; std::vector<size_t> left_starts;
-            wrap_col(block.text, left_lines, left_starts);
+            const bool has_right =
+                bi + 1 < script.blocks.size() &&
+                script.blocks[bi + 1].type == screenplay::BlockType::DualDialogue;
+            const screenplay::Block* rblk =
+                has_right ? &script.blocks[bi + 1] : nullptr;
+            if (rblk) wrap(rblk->text, half_w, rcol, rst);
 
-            // Page break before the pair
-            if (cursor_y + fmt.space_before * spacing_factor_ + lh > print_h) new_page();
-            cursor_y += fmt.space_before * spacing_factor_;
-            float pair_top_y = cursor_y;
+            const int rows =
+                (int)std::max(lcol.size(), rcol.size());
 
-            // Emit left column
-            for (size_t li = 0; li < left_lines.size(); ++li) {
-                if (cursor_y + lh > print_h) { new_page(); pair_top_y = cursor_y; }
-                float x = geo_.margin_left;
-                float y = geo_.margin_top + pair_top_y + (float)li * lh;
-                size_t end_off = (li + 1 < left_starts.size())
-                    ? left_starts[li + 1] : block.text.size();
+            float gap = (first_on_page || continues_speech(prev_type, block.type))
+                            ? 0.f
+                            : std::max(prev_after, fmt.space_before);
+            if (!first_on_page && cursor_y + gap + rows * lh > print_h) {
+                new_page();
+                gap = 0.f;
+            }
+            cursor_y += gap;
+            const float top = cursor_y;
+
+            const float lx = geo_.margin_left;
+            for (size_t li = 0; li < lcol.size(); ++li) {
+                size_t end = (li + 1 < lst.size()) ? lst[li + 1] : block.text.size();
                 current_page.lines.push_back({
-                    bi, li, left_lines[li], x, y,
-                    metrics_.measure(left_lines[li], pt_size_).width, lh,
-                    left_starts[li], end_off });
+                    bi, li, lcol[li],
+                    lx, geo_.margin_top + top + (float)li * lh,
+                    metrics_.measure(lcol[li], pt_size_).width, lh,
+                    lst[li], end });
             }
-
-            size_t right_nlines = 0;
-
-            // Emit right column if paired
-            if (bi + 1 < script.blocks.size() &&
-                script.blocks[bi + 1].type == screenplay::BlockType::DualDialogue) {
-                const auto& rblk = script.blocks[bi + 1];
-                std::vector<std::string> right_lines; std::vector<size_t> right_starts;
-                wrap_col(rblk.text, right_lines, right_starts);
-                right_nlines = right_lines.size();
-                float rx = geo_.margin_left + half_w + 36.f;
-                for (size_t li = 0; li < right_lines.size(); ++li) {
-                    float y = geo_.margin_top + pair_top_y + (float)li * lh;
-                    size_t end_off = (li + 1 < right_starts.size())
-                        ? right_starts[li + 1] : rblk.text.size();
+            if (rblk) {
+                const float rx = geo_.margin_left + half_w + gutter;
+                for (size_t li = 0; li < rcol.size(); ++li) {
+                    size_t end = (li + 1 < rst.size()) ? rst[li + 1]
+                                                       : rblk->text.size();
                     current_page.lines.push_back({
-                        bi + 1, li, right_lines[li], rx, y,
-                        metrics_.measure(right_lines[li], pt_size_).width, lh,
-                        right_starts[li], end_off });
+                        bi + 1, li, rcol[li],
+                        rx, geo_.margin_top + top + (float)li * lh,
+                        metrics_.measure(rcol[li], pt_size_).width, lh,
+                        rst[li], end });
                 }
-                ++bi;   // skip right block; for-loop ++bi makes total +2
+                ++bi;   // consume the right-hand block
             }
-
-            cursor_y = pair_top_y
-                + lh * (float)std::max(left_lines.size(), right_nlines)
-                + fmt.space_after * spacing_factor_;
+            cursor_y      = top + rows * lh;
+            prev_after    = fmt.space_after;
+            prev_type     = block.type;
+            first_on_page = false;
             continue;
         }
 
-        // ── Build display text ────────────────────────────────────────────
-        std::string display = block.text;
-        if (fmt.uppercase)
-            display = QString::fromStdString(display).toUpper().toStdString();
-
-        // ── Word-wrap ─────────────────────────────────────────────────────
-        float col_w = print_w - fmt.left_indent - fmt.right_indent;
-        auto  breaks = metrics_.word_wrap(display, pt_size_, col_w);
-
-        // Build wrapped lines and record the byte offset where each line starts
-        // (relative to display / block.text — same byte structure for Latin UTF-8).
+        // ── Normal block ──────────────────────────────────────────────────
+        const std::string display = fmt.uppercase ? to_upper(block.text)
+                                                   : block.text;
         std::vector<std::string> wrapped;
-        std::vector<size_t>      line_starts;   // start byte offset of each wrapped line
-        {
-            size_t off = 0;
-            for (size_t br : breaks) {
-                wrapped.push_back(display.substr(off, br - off));
-                line_starts.push_back(off);
-                off = br;
-            }
-            if (off < display.size()) {
-                wrapped.push_back(display.substr(off));
-                line_starts.push_back(off);
-            }
-            if (wrapped.empty()) {
-                wrapped.emplace_back();
-                line_starts.push_back(0);
-            }
-        }
+        std::vector<size_t>      starts;
+        wrap(display, fmt.col_width(geo_), wrapped, starts);
+        const int nlines = (int)wrapped.size();
 
-        // ── Page-break decision ───────────────────────────────────────────
-        // Rule: Character must never be separated from its Dialogue/Parenthetical
-        bool keep_with_next =
-            (block.type == screenplay::BlockType::Character)
-            && (bi + 1 < script.blocks.size())
-            && (script.blocks[bi + 1].type == screenplay::BlockType::Dialogue ||
-                script.blocks[bi + 1].type == screenplay::BlockType::Parenthetical ||
-                script.blocks[bi + 1].type == screenplay::BlockType::DualDialogue);
-
-        if (keep_with_next && bi + 1 < script.blocks.size()) {
-            // Require space for Character + first line of Dialogue on same page
-            size_t next_lines = block_line_count(bi + 1);
-            const auto& nfmt  = format_for(script.blocks[bi + 1].type);
-            float next_needed = nfmt.space_before * spacing_factor_
-                                + lh * static_cast<float>(std::min(next_lines, size_t(2)))
-                                + nfmt.space_after * spacing_factor_;
-            if (cursor_y + fmt.space_before * spacing_factor_ + lh + next_needed > print_h)
-                new_page();
-        } else {
-            // Normal block: break if first line doesn't fit
-            if (cursor_y + fmt.space_before * spacing_factor_ + lh > print_h)
-                new_page();
-        }
-
-        // ── Emit space_before ─────────────────────────────────────────────
-        cursor_y += fmt.space_before;
-
-        // ── Emit wrapped lines ────────────────────────────────────────────
-        for (size_t li = 0; li < wrapped.size(); ++li) {
-            // Widow prevention / page break with MORE-CONT'D for dialogue
-            if (cursor_y + lh > print_h) {
-                bool is_dia = (block.type == screenplay::BlockType::Dialogue
-                            || block.type == screenplay::BlockType::Parenthetical);
-                std::string char_name_contd;
-                if (is_dia && li > 0) {
-                    for (int ci = (int)bi - 1; ci >= 0; --ci) {
-                        if (script.blocks[ci].type == screenplay::BlockType::Character) {
-                            char_name_contd =
-                                QString::fromStdString(script.blocks[ci].text)
-                                    .toUpper().toStdString();
-                            break;
-                        }
-                    }
-                }
-                if (!char_name_contd.empty()) {
-                    // Insert "(MORE)" at the bottom of the current page
-                    VisualLine more_vl;
-                    more_vl.block_idx     = bi;
-                    more_vl.line_in_block = wrapped.size();   // sentinel: not editable
-                    more_vl.display_text  = "(MORE)";
-                    more_vl.x             = geo_.margin_left + 144.f; // Character indent
-                    more_vl.y             = geo_.margin_top
-                                           + std::min(cursor_y, print_h - lh);
-                    more_vl.width         = 0.f;
-                    more_vl.height        = lh;
-                    more_vl.start_offset  = display.size();   // past-end sentinel
-                    more_vl.end_offset    = display.size();
-                    more_vl.is_more       = true;
-                    current_page.lines.push_back(more_vl);
-                }
-                new_page();
-                if (!char_name_contd.empty()) {
-                    // Insert "CHARNAME (CONT'D)" at the top of the new page
-                    std::string contd_text = char_name_contd + " (CONT'D)";
-                    VisualLine contd_vl;
-                    contd_vl.block_idx     = bi;
-                    contd_vl.line_in_block = wrapped.size();   // sentinel
-                    contd_vl.display_text  = contd_text;
-                    contd_vl.x             = geo_.margin_left + 144.f;
-                    contd_vl.y             = geo_.margin_top + cursor_y; // cursor_y == 0
-                    contd_vl.width         = 0.f;
-                    contd_vl.height        = lh;
-                    contd_vl.start_offset  = display.size();
-                    contd_vl.end_offset    = display.size();
-                    contd_vl.is_contd      = true;
-                    current_page.lines.push_back(contd_vl);
-                    cursor_y += lh;
-                }
-            }
-
-            float x = geo_.margin_left + fmt.left_indent;
-            float y = geo_.margin_top  + cursor_y;
-
+        // Emit helpers (capture the block's wrapped state by reference).
+        auto emit_line = [&](int li) {
+            float x = fmt.left;
             if (fmt.right_align) {
                 auto lm = metrics_.measure(wrapped[li], pt_size_);
-                x = geo_.page_w - geo_.margin_right - lm.width;
+                x = geo_.page_w - fmt.right - lm.width;
+            } else if (fmt.center_align) {
+                // Centred within this block's OWN text column, not the page —
+                // so a centred Action still respects the screenplay's margins.
+                auto lm = metrics_.measure(wrapped[li], pt_size_);
+                x = fmt.left + (fmt.col_width(geo_) - lm.width) * 0.5f;
             }
-
-            size_t line_end = (li + 1 < line_starts.size())
-                ? line_starts[li + 1]
-                : display.size();
-
+            size_t line_end = (li + 1 < (int)starts.size()) ? starts[li + 1]
+                                                            : display.size();
             current_page.lines.push_back({
-                bi,
-                li,
-                wrapped[li],
-                x, y,
-                metrics_.measure(wrapped[li], pt_size_).width,
-                lh,
-                line_starts[li],
-                line_end
-            });
+                bi, (size_t)li, wrapped[li],
+                x, geo_.margin_top + cursor_y,
+                metrics_.measure(wrapped[li], pt_size_).width, lh,
+                starts[li], line_end });
             cursor_y += lh;
+        };
+        auto emit_continuation = [&](bool contd, const std::string& name) {
+            VisualLine v;
+            v.block_idx     = bi;
+            v.line_in_block = (size_t)nlines;   // sentinel: not user-editable
+            v.display_text  = contd ? (name + " (CONT'D)") : std::string("(MORE)");
+            v.x             = char_fmt.left;    // aligned to the Character column
+            v.y             = geo_.margin_top + cursor_y;
+            v.width         = 0.f;
+            v.height        = lh;
+            v.start_offset  = display.size();
+            v.end_offset    = display.size();
+            v.is_more       = !contd;
+            v.is_contd      = contd;
+            current_page.lines.push_back(v);
+            if (contd) cursor_y += lh;
+        };
+
+        // Vertical gap before this block (collapsed margins).
+        float gap = (first_on_page || continues_speech(prev_type, block.type))
+                        ? 0.f
+                        : std::max(prev_after, fmt.space_before);
+
+        // An author-forced page break wins over every fitting rule below: it
+        // states where the reader turns the page, which pagination cannot
+        // infer. Skipped when the page is already fresh, so forcing a break on
+        // a block that happens to land at the top never yields a blank sheet.
+        if (block.page_break_before && !first_on_page) {
+            new_page();
+            gap = 0.f;
         }
 
-        cursor_y += fmt.space_after * spacing_factor_;
+        // Only Action and Dialogue may break across a page; every other block
+        // is placed as an atomic unit (keep-with-next protects the cues).
+        const bool splittable =
+            block.type == screenplay::BlockType::Action ||
+            block.type == screenplay::BlockType::Dialogue;
+
+        // A cue opening a dialogue must carry enough dialogue with it that the
+        // continuation can either finish or split legally: up to 2 lines (one
+        // line of dialogue + room for "(MORE)"), fewer if the dialogue is short.
+        auto open_lines = [&](size_t di) -> float {
+            return (float)std::min(line_count(di), 2) * lh;
+        };
+
+        // Mandatory footprint of a keep-with-next unit: the block plus the
+        // companion lines that must never be split away from it.
+        float footprint = nlines * lh;
+        if (fmt.keep_with_next && bi + 1 < script.blocks.size()) {
+            const auto ntype = script.blocks[bi + 1].type;
+            const auto nfmt  = format_for(ntype, profile_);
+            if (block.type == screenplay::BlockType::Character) {
+                if (ntype == screenplay::BlockType::Parenthetical) {
+                    footprint += std::max(fmt.space_after, nfmt.space_before)
+                               + line_count(bi + 1) * lh;
+                    if (bi + 2 < script.blocks.size() &&
+                        script.blocks[bi + 2].type == screenplay::BlockType::Dialogue) {
+                        const auto dfmt =
+                            format_for(screenplay::BlockType::Dialogue, profile_);
+                        footprint += std::max(nfmt.space_after, dfmt.space_before)
+                                   + open_lines(bi + 2);
+                    }
+                } else if (ntype == screenplay::BlockType::Dialogue ||
+                           ntype == screenplay::BlockType::DualDialogue) {
+                    footprint += std::max(fmt.space_after, nfmt.space_before)
+                               + open_lines(bi + 1);
+                }
+            } else {
+                // Scene Heading / Transition / Parenthetical: + first next line.
+                footprint += std::max(fmt.space_after, nfmt.space_before) + lh;
+            }
+        }
+
+        // Decide whether the block starts on this page or is pushed to the next.
+        if (!first_on_page) {
+            const float avail_h = print_h - cursor_y - gap;
+            bool push;
+            if (!splittable) {
+                push = footprint > avail_h;      // atomic unit must fit whole
+            } else {
+                const bool whole_fits = nlines * lh <= avail_h;
+                // Min lines to legally OPEN a split here: dialogue needs a line
+                // plus its "(MORE)"; action needs its orphan count.
+                const int  min_open =
+                    std::min(nlines,
+                             block.type == screenplay::BlockType::Dialogue
+                                 ? 2 : fmt.orphan);
+                push = !whole_fits && (min_open * lh > avail_h);
+            }
+            if (push) { new_page(); gap = 0.f; }
+        }
+        cursor_y += gap;
+
+        // ── Place wrapped lines, splitting across pages where the rules allow.
+        int placed = 0;
+        while (placed < nlines) {
+            const int avail     = (int)std::floor((print_h - cursor_y) / lh + 1e-4f);
+            const int remaining = nlines - placed;
+
+            if (avail >= remaining) {
+                for (int i = 0; i < remaining; ++i) emit_line(placed + i);
+                placed = nlines;
+                break;
+            }
+
+            const bool is_dialogue =
+                block.type == screenplay::BlockType::Dialogue ||
+                block.type == screenplay::BlockType::Parenthetical;
+
+            // Dialogue splits with the (MORE)/(CONT'D) convention (min 1 line
+            // each side). Action splits with a 2-line widow/orphan guard.
+            const int min_here = is_dialogue ? 1 : fmt.orphan;
+            const int min_next = is_dialogue ? 1 : fmt.widow;
+
+            int take = avail;
+            if (is_dialogue) take -= 1;                      // room for "(MORE)"
+            if (remaining - take < min_next) take = remaining - min_next;
+
+            if (take < min_here) {
+                // Can't satisfy the minimum here → carry the rest to a new page.
+                new_page();
+                continue;
+            }
+
+            for (int i = 0; i < take; ++i) emit_line(placed + i);
+            placed += take;
+
+            if (is_dialogue) {
+                const std::string name = owning_character(bi);
+                if (!name.empty()) emit_continuation(false, {});
+                new_page();
+                if (!name.empty()) emit_continuation(true, name);
+            } else {
+                new_page();
+            }
+        }
+
+        prev_after    = fmt.space_after;
+        prev_type     = block.type;
+        first_on_page = false;
     }
 
-    // Always flush last page (even if empty — shows blank page 1 on new doc)
     pages.push_back(std::move(current_page));
 
-    // Safety: if nothing was added at all, ensure at least one page
     if (pages.empty()) {
         Page p; p.number = 1;
         pages.push_back(std::move(p));
     }
-
     return pages;
 }
 

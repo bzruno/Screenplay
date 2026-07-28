@@ -6,6 +6,7 @@
 
 #include "../model/model.hpp"
 #include "../config/language.hpp"
+#include "../parsing/screenplay_parse.hpp"
 #include <string>
 #include <string_view>
 #include <vector>
@@ -56,8 +57,17 @@ public:
         }
         std::vector<std::pair<int,std::string>> raw;
         collect(node, raw);
+        // Never offer what has already been typed in full: completing "JOE"
+        // with "JOE" (or "CUT TO:" with "CUT TO:") is a no-op that leaves the
+        // popup open over finished text.
+        raw.erase(std::remove_if(raw.begin(), raw.end(),
+                                 [&up](const auto& e){ return e.second == up; }),
+                  raw.end());
         std::sort(raw.begin(), raw.end(),
-                  [](const auto& a, const auto& b){ return a.first > b.first; });
+                  [](const auto& a, const auto& b){
+                      if (a.first != b.first) return a.first > b.first;
+                      return a.second < b.second;   // stable, alphabetical ties
+                  });
         std::vector<std::string> out;
         out.reserve(std::min(raw.size(), max_results));
         for (size_t i = 0; i < std::min(raw.size(), max_results); ++i)
@@ -156,27 +166,35 @@ public:
             return prefixes();
         }
 
-        // Partial prefix match
+        // ── Which stage of "PREFIX LOCATION - TIME" are we in? ───────────
+        //
+        // Order matters here. A COMPLETED prefix has to be recognised before a
+        // partial one, because "EXT." is simultaneously a complete prefix and
+        // a leading substring of itself — testing "partial" first meant a
+        // finished prefix kept re-suggesting itself forever and never advanced
+        // to suggesting a location.
         bool has_prefix = false;
         std::string after_prefix;
         for (const auto& pfx : prefixes()) {
-            if (up == pfx.substr(0, up.size())) {
-                // Still typing the prefix
-                std::vector<std::string> res;
-                for (const auto& p : prefixes())
-                    if (p.rfind(up, 0) == 0) res.push_back(p);
-                return res;
-            }
-            if (up.rfind(pfx, 0) == 0) {
-                has_prefix = true;
+            if (up.rfind(pfx, 0) == 0) {          // starts with the FULL prefix
+                has_prefix   = true;
                 after_prefix = up.substr(pfx.size());
                 break;
             }
         }
 
         if (!has_prefix) {
-            // Doesn't start with a known prefix — suggest them all
-            return prefixes();
+            // Still mid-prefix: offer only the prefixes this text could still
+            // become. `p.size() > up.size()` keeps a completed prefix out (it
+            // is handled above), and an empty result is the correct answer for
+            // text that matches nothing — typing "A" opens a scene heading
+            // that is simply not INT./EXT./I/E., so SmartType must stay shut
+            // rather than offer all three regardless of what was typed.
+            std::vector<std::string> res;
+            for (const auto& p : prefixes())
+                if (p.size() > up.size() && p.rfind(up, 0) == 0)
+                    res.push_back(p);
+            return res;
         }
 
         // Trim leading space after prefix
@@ -255,26 +273,21 @@ class AutocompleteSystem {
 public:
     AutocompleteSystem() {
         seed_transitions();
-        seed_dialogue_extensions();
     }
 
     // Clear all learned data and re-seed built-in entries
     void reset() {
         characters_.reset();
         transitions_.reset();
-        dialogue_ext_.reset();
         scene_type_ = SceneHeadingSmartType{};
         seed_transitions();
-        seed_dialogue_extensions();
     }
 
-    // Re-seed built-in transitions and extensions with current language.
+    // Re-seed built-in transitions with current language.
     // Call after LanguageConfig::set() to pick up the new language.
     void reseed() {
         transitions_.reset();
-        dialogue_ext_.reset();
         seed_transitions();
-        seed_dialogue_extensions();
     }
 
     // Called when a block is committed (Enter pressed)
@@ -282,7 +295,9 @@ public:
         if (text.empty()) return;
         switch (type) {
         case screenplay::BlockType::Character:
-            characters_.learn(text);
+            // Learn the NAME only — never the extension — so name suggestions
+            // stay clean ("JOÃO", not "JOÃO (V.O.)").
+            characters_.learn(parse::parse_character_cue(std::string(text)).name);
             break;
         case screenplay::BlockType::SceneHeading:
             scene_type_.learn_heading(text);
@@ -304,18 +319,60 @@ public:
         case screenplay::BlockType::SceneHeading:
             return scene_type_.suggest(text, cursor_offset);
 
-        case screenplay::BlockType::Character:
+        case screenplay::BlockType::Character: {
+            // While typing a Character Extension — an unclosed "(" after the
+            // name, e.g. "JOÃO (V" — suggest extensions (V.O., O.S., …).
+            // Otherwise suggest learned character names.
+            CharExtContext ec = char_ext_context(text, cursor_offset);
+            if (ec.active) return suggest_extensions(ec.partial);
             return characters_.suggest(text);
+        }
 
         case screenplay::BlockType::Transition:
             return transitions_.suggest(text);
 
         case screenplay::BlockType::Parenthetical:
-            return dialogue_ext_.suggest(text);
+            return {};   // No SmartType inside Parenthetical (wrylie) blocks.
 
         default:
             return {};
         }
+    }
+
+    // True when the caret sits inside an open Character Extension parenthesis.
+    bool is_character_extension(const std::string& text, size_t cursor) const {
+        return char_ext_context(text, cursor).active;
+    }
+
+    // Build the full Character text when accepting an extension suggestion:
+    // keeps everything up to and including "(", appends the suggestion + ")".
+    std::string build_character_extension(const std::string& text, size_t cursor,
+                                          const std::string& suggestion) const {
+        CharExtContext ec = char_ext_context(text, cursor);
+        if (!ec.active) return text;
+        return text.substr(0, ec.open_pos + 1) + suggestion + ")";
+    }
+
+    // The curated Character Extension list, in industry-usage order. Any other
+    // text the writer types between the parentheses is accepted verbatim as a
+    // custom extension — the list is a convenience, not a constraint.
+    static const std::vector<std::string>& character_extensions() {
+        static const std::vector<std::string> ext = {
+            "V.O.", "O.S.", "O.C.", "CONT'D", "FILTERED", "PRE-LAP"
+        };
+        return ext;
+    }
+
+    // Extensions whose text starts with `partial` (case-insensitive), preserving
+    // the curated order. An empty partial returns the full list.
+    static std::vector<std::string> suggest_extensions(const std::string& partial) {
+        std::string up = partial;
+        std::transform(up.begin(), up.end(), up.begin(),
+                       [](unsigned char c){ return std::toupper(c); });
+        std::vector<std::string> out;
+        for (const auto& e : character_extensions())
+            if (e.rfind(up, 0) == 0) out.push_back(e);
+        return out;
     }
 
     // For scene headings: build the full replacement string
@@ -336,7 +393,23 @@ private:
     SceneHeadingSmartType scene_type_;
     AutocompleteIndex     characters_;
     AutocompleteIndex     transitions_;
-    AutocompleteIndex     dialogue_ext_;
+
+    // Locates an open Character Extension parenthesis at/before the caret.
+    struct CharExtContext {
+        bool        active   = false;
+        size_t      open_pos = 0;       // index of the '(' being completed
+        std::string partial;            // text typed between '(' and the caret
+    };
+    static CharExtContext char_ext_context(const std::string& text, size_t cursor) {
+        CharExtContext c;
+        const size_t cur = std::min(cursor, text.size());
+        for (size_t i = cur; i-- > 0; ) {
+            if (text[i] == ')') break;              // parenthesis already closed
+            if (text[i] == '(') { c.active = true; c.open_pos = i; break; }
+        }
+        if (c.active) c.partial = text.substr(c.open_pos + 1, cur - c.open_pos - 1);
+        return c;
+    }
 
     void seed_transitions() {
         using LC = screenplay::config::LanguageConfig;
@@ -355,22 +428,6 @@ private:
         }
     }
 
-    void seed_dialogue_extensions() {
-        using LC = screenplay::config::LanguageConfig;
-        using AL = screenplay::config::AppLanguage;
-        if (LC::current() == AL::English) {
-            for (const auto& d : {
-                "V.O.", "O.S.", "O.C.", "CONT'D", "PRE-LAP:",
-                "WHISPERING", "SHOUTING", "TO HIMSELF", "SARCASTICALLY",
-                "FILTERED", "ON PHONE"
-            }) dialogue_ext_.learn(d);
-        } else {
-            for (const auto& d : {
-                "V.O.", "O.S.", "CONT'D", "SUSSURRANDO", "GRITANDO",
-                "PARA SI MESMO", "IRÔNICO", "AO TELEFONE"
-            }) dialogue_ext_.learn(d);
-        }
-    }
 };
 
 } // namespace screenplay::editor

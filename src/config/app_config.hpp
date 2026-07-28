@@ -42,9 +42,6 @@ public:
     QString font_path() const {
         return s_.value("editor/font_path", "").toString();
     }
-    void set_font_path(const QString& p) {
-        s_.setValue("editor/font_path", p);
-    }
 
     // ── Recent files ──────────────────────────────────────────────────────
     QStringList recent_files() const {
@@ -62,7 +59,6 @@ public:
     bool us_letter() const {
         return s_.value("page/us_letter", true).toBool();
     }
-    void set_us_letter(bool v) { s_.setValue("page/us_letter", v); }
 
     void sync() { s_.sync(); }
 

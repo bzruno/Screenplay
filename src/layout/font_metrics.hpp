@@ -4,12 +4,6 @@
 
 namespace screenplay::layout {
 
-struct GlyphMetrics {
-    float advance_x;
-    float ascent;
-    float descent;
-};
-
 struct LineMetrics {
     float width;
     float height;

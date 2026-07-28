@@ -12,3 +12,27 @@ Makefile
 *.user
 *.qrc.depends
 moc_*.cpp
+
+# MSVC / Visual Studio build artifacts
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+.vs/
+
+# CMake build trees (any name) + generated files
+build*/
+out/
+CTestTestfile.cmake
+*.cmake.stamp
+
+# Qt
+*.moc
+*_autogen/
+
+# Editor / scratch
+*.bak
+*~
+Thumbs.db

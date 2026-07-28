@@ -24,10 +24,24 @@ FreeTypeMetrics::~FreeTypeMetrics() {
 }
 
 void FreeTypeMetrics::set_size(float pt_size) const {
+    if (cached_size_ == pt_size) return;   // already at this size — nothing to do
+    cached_size_ = pt_size;
+    advance_cache_.clear();   // advances scale with size; stale entries would be wrong
     // 72 DPI — caller applies screen DPI scale externally
     FT_Set_Char_Size(face_,
         static_cast<FT_F26Dot6>(pt_size * 64), 0,
         72, 72);
+}
+
+int32_t FreeTypeMetrics::glyph_advance(uint32_t cp) const {
+    auto it = advance_cache_.find(cp);
+    if (it != advance_cache_.end()) return it->second;
+    FT_UInt  glyph_idx = FT_Get_Char_Index(face_, cp);
+    FT_Fixed advance   = 0;
+    FT_Get_Advance(face_, glyph_idx, FT_LOAD_NO_HINTING, &advance);
+    const int32_t a = static_cast<int32_t>(advance);
+    advance_cache_.emplace(cp, a);
+    return a;
 }
 
 LineMetrics FreeTypeMetrics::measure(std::string_view text, float pt_size) const {
@@ -40,10 +54,7 @@ LineMetrics FreeTypeMetrics::measure(std::string_view text, float pt_size) const
         uint32_t cp = screenplay::utf8::decode(text, i, cp_len);
         if (cp_len == 0) break;
 
-        FT_UInt  glyph_idx = FT_Get_Char_Index(face_, cp);
-        FT_Fixed advance   = 0;
-        FT_Get_Advance(face_, glyph_idx, FT_LOAD_NO_HINTING, &advance);
-        width += static_cast<float>(advance >> 16);
+        width += static_cast<float>(glyph_advance(cp) >> 16);
         i += cp_len;
     }
 
@@ -83,10 +94,7 @@ std::vector<size_t> FreeTypeMetrics::word_wrap(
             continue;
         }
 
-        FT_UInt  glyph_idx = FT_Get_Char_Index(face_, cp);
-        FT_Fixed advance   = 0;
-        FT_Get_Advance(face_, glyph_idx, FT_LOAD_NO_HINTING, &advance);
-        float glyph_w = static_cast<float>(advance >> 16);
+        float glyph_w = static_cast<float>(glyph_advance(cp) >> 16);
         line_w += glyph_w;
 
         if (cp == ' ') last_space = i;
@@ -103,10 +111,7 @@ std::vector<size_t> FreeTypeMetrics::word_wrap(
                 size_t jlen;
                 uint32_t jcp = screenplay::utf8::decode(text, j, jlen);
                 if (jlen == 0) break;
-                FT_UInt  gi  = FT_Get_Char_Index(face_, jcp);
-                FT_Fixed adv = 0;
-                FT_Get_Advance(face_, gi, FT_LOAD_NO_HINTING, &adv);
-                line_w += static_cast<float>(adv >> 16);
+                line_w += static_cast<float>(glyph_advance(jcp) >> 16);
                 j += jlen;
             }
 
