@@ -16,6 +16,7 @@
 #include "../src/parsing/paste_parser.hpp"
 #include "../src/io/exporter.hpp"
 #include "../src/io/importer.hpp"
+#include "../src/layout/layout_engine.hpp"
 
 // ── Stub font metrics (no FreeType dependency in tests) ───────────────────────
 #include "../src/layout/font_metrics.hpp"
@@ -66,6 +67,15 @@ static int passed = 0, failed = 0;
     else      { ++failed; std::cout << "  FAIL  " #cond "  [" __FILE__ ":" << __LINE__ << "]\n"; } \
 } while(0)
 
+// A size or emptiness assertion that guards an indexed access must stop the
+// test when it fails. Falling through indexes out of range, and the runner
+// dies on the access violation without reporting a single result.
+#define REQUIRE(cond) do { \
+    if (cond) { ++passed; std::cout << "  PASS  " #cond "\n"; } \
+    else      { ++failed; std::cout << "  FAIL  " #cond "  [" __FILE__ ":" << __LINE__ \
+                                    << "]  - aborting test\n"; return; } \
+} while(0)
+
 #define SECTION(name) std::cout << "\n── " name " ──\n";
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -106,18 +116,18 @@ void test_undo_stack() {
     CHECK(!stack.can_redo());
 
     auto u = stack.undo();
-    CHECK(u.has_value());
+    REQUIRE(u.has_value());
     CHECK(u->before.blocks[0].text == "B");
     CHECK(stack.can_redo());
 
     auto u2 = stack.undo();
-    CHECK(u2.has_value());
+    REQUIRE(u2.has_value());
     CHECK(u2->before.blocks[0].text == "A");
 
     CHECK(!stack.can_undo());
 
     auto r = stack.redo();
-    CHECK(r.has_value());
+    REQUIRE(r.has_value());
     CHECK(r->after.blocks[0].text == "B");
 }
 
@@ -132,7 +142,7 @@ void test_autocomplete() {
     idx.learn("JAMES");
 
     auto s = idx.suggest("J");
-    CHECK(!s.empty());
+    REQUIRE(!s.empty());
     // JOHN should be first (frequency 2)
     CHECK(s[0] == "JOHN");
 
@@ -144,7 +154,7 @@ void test_autocomplete() {
 
     // Case-insensitive input
     auto s4 = idx.suggest("jo");
-    CHECK(!s4.empty());
+    REQUIRE(!s4.empty());
     CHECK(s4[0] == "JOHN");
 }
 
@@ -160,34 +170,31 @@ void test_character_smarttype() {
     sys.train(BlockType::Character, "JOHN");
     sys.train(BlockType::Character, "JOHN (V.O.)");
 
-    auto names = sys.query(BlockType::Character, "JOHN", std::strlen("JOHN"));
-    CHECK(names.size() == 1);
-    CHECK(names[0] == "JOHN");
+    // A name already typed in full is deliberately never offered as its own
+    // completion, so a strict prefix is what reveals what was learned: one
+    // entry, the bare name.
+    const std::vector<std::string> kJohnOnly = { "JOHN" };
+    CHECK(sys.query(BlockType::Character, "JOH", std::strlen("JOH")) == kJohnOnly);
+    CHECK(sys.query(BlockType::Character, "JOHN", std::strlen("JOHN")).empty());
 
     // Typing "(" after the name switches to extension suggestions: the curated
     // list, in industry-usage order.
+    const std::vector<std::string> kAllExtensions = {
+        "V.O.", "O.S.", "O.C.", "CONT'D", "FILTERED", "PRE-LAP"
+    };
     std::string typing = "JOHN (";
-    auto exts = sys.query(BlockType::Character, typing, typing.size());
-    CHECK(exts.size() == 6);
-    CHECK(exts[0] == "V.O.");
-    CHECK(exts[1] == "O.S.");
-    CHECK(exts[2] == "O.C.");
-    CHECK(exts[3] == "CONT'D");
-    CHECK(exts[4] == "FILTERED");
-    CHECK(exts[5] == "PRE-LAP");
+    CHECK(sys.query(BlockType::Character, typing, typing.size()) == kAllExtensions);
 
     // Prefix-filtered inside the parentheses, preserving order.
+    const std::vector<std::string> kOExtensions = { "O.S.", "O.C." };
     std::string typingO = "JOHN (O";
-    auto extO = sys.query(BlockType::Character, typingO, typingO.size());
-    CHECK(extO.size() == 2);
-    CHECK(extO[0] == "O.S.");
-    CHECK(extO[1] == "O.C.");
+    CHECK(sys.query(BlockType::Character, typingO, typingO.size()) == kOExtensions);
 
-    // Scene heading prefixes now include INT/EXT.
-    auto scene = sys.query(BlockType::SceneHeading, "INT", std::strlen("INT"));
-    CHECK(scene.size() == 2);
-    CHECK(scene[0] == "INT.");
-    CHECK(scene[1] == "INT/EXT.");
+    // Mid-prefix scene heading text offers only the prefixes it could still
+    // become, and a finished prefix is not re-suggested: "INT" completes to
+    // "INT." and nothing else.
+    const std::vector<std::string> kIntPrefix = { "INT." };
+    CHECK(sys.query(BlockType::SceneHeading, "INT", std::strlen("INT")) == kIntPrefix);
 }
 
 void test_paste_parser() {
@@ -206,7 +213,7 @@ void test_paste_parser() {
     };
 
     auto types = parse::classify_paragraphs(paras);
-    CHECK(types.size() == 8);
+    REQUIRE(types.size() == 8);
     CHECK(types[0] == BlockType::SceneHeading);
     CHECK(types[1] == BlockType::Action);
     CHECK(types[2] == BlockType::Character);
@@ -223,14 +230,13 @@ void test_layout_engine() {
     using namespace screenplay::layout;
 
     StubMetrics metrics;
-    // Tiny page: 200pt wide, 100pt tall, 10pt margins → 80pt printable height
-    PageGeometry geo;
-    geo.page_w       = 200.f;
-    geo.page_h       = 100.f;
-    geo.margin_top   = 10.f;
-    geo.margin_bot   = 10.f;
-    geo.margin_left  = 10.f;
-    geo.margin_right = 10.f;
+    // Real page WIDTH, short page height. Block indents are absolute insets
+    // from the page edges, so shrinking the width would give the text columns
+    // a negative size; only the height may be cut to force pagination.
+    PageGeometry geo = PageGeometry::us_letter();
+    geo.page_h     = 100.f;
+    geo.margin_top = 5.f;
+    geo.margin_bot = 5.f;
 
     LayoutEngine engine(metrics, geo, 12.f);
 
@@ -240,7 +246,7 @@ void test_layout_engine() {
         s.append(BlockType::Action, "Line of action text.");
 
     auto pages = engine.layout(s);
-    CHECK(pages.size() >= 2);
+    REQUIRE(pages.size() >= 2);
     CHECK(pages[0].number == 1);
     CHECK(pages[1].number == 2);
 
@@ -256,31 +262,35 @@ void test_layout_character_grouping() {
     using namespace screenplay::layout;
 
     StubMetrics metrics;
-    PageGeometry geo;
-    geo.page_w = 300.f; geo.page_h = 80.f;
-    geo.margin_top = 5.f; geo.margin_bot = 5.f;
-    geo.margin_left = 5.f; geo.margin_right = 5.f;
+    PageGeometry geo = PageGeometry::us_letter();
+    geo.page_h     = 100.f;
+    geo.margin_top = 5.f;
+    geo.margin_bot = 5.f;
 
     LayoutEngine engine(metrics, geo, 12.f);
-    Script s;
-    // Fill almost a page with action
-    s.append(BlockType::Action, "Some action to fill the page up almost completely.");
-    s.append(BlockType::Character, "JOHN");
-    s.append(BlockType::Dialogue,  "Hello.");
 
-    auto pages = engine.layout(s);
-    // Character and Dialogue must be on the same page
-    if (pages.size() >= 2) {
-        // Find character block page and dialogue block page
-        int char_page = -1, dial_page = -1;
-        for (int pi = 0; pi < (int)pages.size(); ++pi) {
+    // Sweeping the amount of preceding action lands the cue at every possible
+    // distance from the page bottom, so the boundary where it would be split
+    // from its dialogue is actually exercised instead of guessed at.
+    for (int filler = 0; filler <= 12; ++filler) {
+        Script s;
+        for (int i = 0; i < filler; ++i)
+            s.append(BlockType::Action, "Action line.");
+
+        const size_t cue_idx = s.blocks.size();
+        s.append(BlockType::Character, "JOHN");
+        s.append(BlockType::Dialogue,  "Hello.");
+
+        int cue_page = -1, dialogue_page = -1;
+        auto pages = engine.layout(s);
+        for (size_t pi = 0; pi < pages.size(); ++pi)
             for (const auto& vl : pages[pi].lines) {
-                if (vl.block_idx == 1) char_page = pi;
-                if (vl.block_idx == 2) dial_page = pi;
+                if (vl.block_idx == cue_idx) cue_page = (int)pi;
+                if (vl.block_idx == cue_idx + 1 && dialogue_page < 0)
+                    dialogue_page = (int)pi;
             }
-        }
-        if (char_page >= 0 && dial_page >= 0)
-            CHECK(char_page == dial_page);
+
+        CHECK(cue_page >= 0 && cue_page == dialogue_page);
     }
 }
 
@@ -323,7 +333,7 @@ void test_fdx_roundtrip() {
     CHECK(fdx.find("<FinalDraft") != std::string::npos);
 
     Script loaded = FDXImporter::parse(fdx);
-    CHECK(loaded.blocks.size() == 3);
+    REQUIRE(loaded.blocks.size() == 3);
     CHECK(loaded.blocks[0].type == BlockType::SceneHeading);
     CHECK(loaded.blocks[1].type == BlockType::Character);
     CHECK(loaded.blocks[2].type == BlockType::Dialogue);
@@ -350,7 +360,7 @@ void test_fdx_fidelity() {
     CHECK(xml.find("<Bold>")                     == std::string::npos); // old form gone
 
     Script r = FDXImporter::parse(xml);
-    CHECK(r.blocks.size() == 2);
+    REQUIRE(r.blocks.size() == 2);
     CHECK(r.blocks[0].scene_number == "1A");
     CHECK(r.blocks[1].is_bold_whole() && r.blocks[1].is_underline_whole()
           && !r.blocks[1].is_italic_whole());
@@ -362,21 +372,34 @@ void test_fdx_fidelity() {
         "<Text> &#233;&#x21;</Text></Paragraph></Content>";
     ImportReport rep;
     Script m = FDXImporter::parse(multi, &rep);
-    CHECK(m.blocks.size() == 1);
+    REQUIRE(m.blocks.size() == 1);
     CHECK(m.blocks[0].text == "He runs \xC3\xA9!");   // concatenated + decoded
     // Only "runs" (bytes [3,7)) is italic — not the whole block.
     CHECK(!m.blocks[0].is_italic_whole());
     CHECK(style_covers(m.blocks[0].italic_runs, 3, 7));
     CHECK(!style_covers(m.blocks[0].italic_runs, 0, 3));
 
-    // ── Unknown element downgraded to Action and reported ────────────────
+    // ── "Shot" is an element this model represents, so it imports as itself
+    //    and nothing is reported as converted ───────────────────────────────
     const std::string shot =
         "<Content><Paragraph Type=\"Shot\"><Text>ON THE DOOR</Text></Paragraph></Content>";
     ImportReport rep2;
     Script sh = FDXImporter::parse(shot, &rep2);
-    CHECK(sh.blocks[0].type == BlockType::Action);
+    REQUIRE(!sh.blocks.empty());
+    CHECK(sh.blocks[0].type == BlockType::Shot);
     CHECK(sh.blocks[0].text == "ON THE DOOR");
-    CHECK(rep2.downgraded_types.size() == 1 && rep2.downgraded_types[0] == "Shot");
+    CHECK(rep2.downgraded_types.empty());
+
+    // ── An element with no equivalent here keeps its text as Action, and the
+    //    conversion is reported so the user can be told ─────────────────────
+    const std::string lyrics =
+        "<Content><Paragraph Type=\"Lyrics\"><Text>La la la</Text></Paragraph></Content>";
+    ImportReport rep3;
+    Script ly = FDXImporter::parse(lyrics, &rep3);
+    REQUIRE(!ly.blocks.empty());
+    CHECK(ly.blocks[0].type == BlockType::Action);
+    CHECK(ly.blocks[0].text == "La la la");
+    CHECK(rep3.downgraded_types.size() == 1 && rep3.downgraded_types[0] == "Lyrics");
 
     // ── Robustness: truncated / empty / garbage never loop or crash ──────
     Script trunc = FDXImporter::parse(
@@ -402,7 +425,7 @@ void test_json_roundtrip() {
     CHECK(json.find("\"blocks\"") != std::string::npos);
 
     Script loaded = JsonDeserializer::parse(json);
-    CHECK(loaded.blocks.size() == 4);
+    REQUIRE(loaded.blocks.size() == 4);
     CHECK(loaded.blocks[2].type == BlockType::Character);
     CHECK(loaded.blocks[2].text == "SCIENTIST");
     CHECK(loaded.blocks[3].text == "Eureka!");
@@ -410,6 +433,8 @@ void test_json_roundtrip() {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 int main() {
+    // Unbuffered: if a test crashes, the output up to the failure survives.
+    std::cout << std::unitbuf;
     std::cout << "Screenplay Editor — Unit Tests\n";
     std::cout << std::string(40, '=') << "\n";
 

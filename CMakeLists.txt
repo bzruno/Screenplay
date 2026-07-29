@@ -120,6 +120,25 @@ add_custom_command(TARGET ScreenplayEditor POST_BUILD
             "$<TARGET_FILE_DIR:ScreenplayEditor>/fonts"
     COMMENT "Bundling Courier Prime fonts next to the executable")
 
+# ── Unit tests ───────────────────────────────────────────────────────────────
+# The logic under test lives in headers, so the only translation units to
+# compile are the test file and the layout engine. FreeType is not linked: the
+# tests substitute their own IFontMetrics. Qt6::Core is, because layout_engine
+# uses QString for Unicode-aware upper-casing. The Qt DLLs windeployqt drops
+# beside ScreenplayEditor sit in the same directory, so the test binary finds
+# them without a deploy step of its own.
+add_executable(ScreenplayTests
+    tests/test_main.cpp
+    src/layout/layout_engine.cpp
+)
+
+target_include_directories(ScreenplayTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(ScreenplayTests PRIVATE Qt6::Core)
+
 if(MSVC)
     target_compile_options(ScreenplayEditor PRIVATE /W4)
+    target_compile_options(ScreenplayTests  PRIVATE /W4)
 endif()
