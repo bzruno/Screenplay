@@ -1,38 +1,70 @@
+# ── Build trees and binaries ─────────────────────────────────────────────────
 build/
+build*/
+out/
+cmake-build-*/
 *.o
 *.a
 *.so
 *.dylib
 *.exe
-.DS_Store
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
-*.user
-*.qrc.depends
-moc_*.cpp
-
-# MSVC / Visual Studio build artifacts
 *.obj
 *.pdb
 *.ilk
 *.exp
 *.lib
 *.dll
-.vs/
 
-# CMake build trees (any name) + generated files
-build*/
-out/
+# ── CMake / Ninja / Make generated files ─────────────────────────────────────
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
 CTestTestfile.cmake
 *.cmake.stamp
+Makefile
+build.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
 
-# Qt
+# ── vcpkg ────────────────────────────────────────────────────────────────────
+vcpkg_installed/
+
+# ── Qt generated (moc / rcc / uic) ───────────────────────────────────────────
 *.moc
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
 *_autogen/
+*.qrc.depends
 
-# Editor / scratch
-*.bak
-*~
+# ── Editors and IDEs ─────────────────────────────────────────────────────────
+.vscode/
+.vs/
+.idea/
+*.user
+*.suo
+*.sln
+*.vcxproj
+*.vcxproj.*
+.cache/
+.clangd/
+
+# ── AI assistant tooling ─────────────────────────────────────────────────────
+.claude/
+CLAUDE.md
+.cursor/
+.aider*
+
+# ── Local developer scripts (machine-specific absolute paths) ────────────────
+build.bat
+
+# ── OS and scratch files ─────────────────────────────────────────────────────
+.DS_Store
 Thumbs.db
+desktop.ini
+*.bak
+*.tmp
+*.log
+*~
